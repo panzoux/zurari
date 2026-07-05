@@ -1724,14 +1724,7 @@ static class Program
                     {
                         State.Leap.NeedsRecompute = false;
                         ApplyLeapFilter();
-                        // Auto-enter single directory match
-                        if (!State.Leap.NoMatch && State.Leap.VisibleIndices.Count == 1)
-                        {
-                            Column ac = Columns[State.ActiveColumn];
-                            if (ac.Entries.Count > 0 && ac.Selected < ac.Entries.Count
-                                && ac.Entries[ac.Selected].EndsWith("/"))
-                                await EnterDirInLeapAsync();
-                        }
+                        await TryLeapAutoEnterAsync(); // auto-enter single directory match
                     }
                     else if (State.Search.Active
                         && State.Search.NeedsRecompute
@@ -2955,6 +2948,17 @@ static class Program
             return;
         }
 
+        // "/": enter the currently selected directory (same as Right/Enter on a dir)
+        if (key.KeyChar == '/')
+        {
+            if (col.Entries.Count > 0 && col.Selected >= 0 && col.Selected < col.Entries.Count
+                && col.Entries[col.Selected].EndsWith("/"))
+            {
+                await EnterDirInLeapAsync();
+            }
+            return;
+        }
+
         // Printable character: append to buffer
         if (!char.IsControl(key.KeyChar))
         {
@@ -2984,6 +2988,16 @@ static class Program
         State.Leap.NoMatch = false;
         State.Leap.ColumnScrollOffset = 0;
         ApplyLeapFilter(); // empty local filter = all entries visible
+        await TryLeapAutoEnterAsync(); // cascade through further singleton directories
+    }
+
+    static async Task TryLeapAutoEnterAsync()
+    {
+        if (State.Leap.NoMatch || State.Leap.VisibleIndices.Count != 1) return;
+        Column ac = Columns[State.ActiveColumn];
+        if (ac.Entries.Count > 0 && ac.Selected < ac.Entries.Count
+            && ac.Entries[ac.Selected].EndsWith("/"))
+            await EnterDirInLeapAsync();
     }
 
     static async Task LeapStepUpAsync()
