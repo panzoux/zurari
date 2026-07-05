@@ -5,13 +5,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>zrr</AssemblyName>
+    <RootNamespace>Zurari</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Remove="ColumnFileManager.Tests/**" />
+    <Compile Remove="Zurari.Tests/**" />
   </ItemGroup>
   <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
-      <_Parameter1>ColumnFileManager.Tests</_Parameter1>
+      <_Parameter1>Zurari.Tests</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>
   <ItemGroup>
