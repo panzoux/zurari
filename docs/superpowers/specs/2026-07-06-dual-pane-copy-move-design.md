@@ -218,6 +218,10 @@ UI から独立した非同期エンジンとして実装する。
 ```csharp
 enum ConflictResolution { Overwrite, Skip, Rename }
 
+// 衝突1件へのユーザーの回答。Rename のときは NewName 必須。
+// コールバックが null を返した場合は「ジョブごとキャンセル」を意味する。
+sealed record ConflictDecision(ConflictResolution Resolution, string? NewName = null);
+
 // バッチ全体の結果。UI 層はこれを結果サマリの表示に使う
 sealed record FileOpResult(int Succeeded, int Skipped, int Failed, string? FirstError);
 
@@ -234,14 +238,14 @@ static class FileOpEngine
         IReadOnlyList<string> sources,
         string destDir,
         IFileOpProgress progress,
-        Func<string, Task<ConflictResolution>> onConflict,
+        Func<string, Task<ConflictDecision?>> onConflict,
         CancellationToken ct);
 
     static Task<FileOpResult> MoveAsync(
         IReadOnlyList<string> sources,
         string destDir,
         IFileOpProgress progress,
-        Func<string, Task<ConflictResolution>> onConflict,
+        Func<string, Task<ConflictDecision?>> onConflict,
         CancellationToken ct);
 }
 ```
