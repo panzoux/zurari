@@ -1725,6 +1725,7 @@ static class Program
                         State.Leap.NeedsRecompute = false;
                         ApplyLeapFilter();
                         await TryLeapAutoEnterAsync(); // auto-enter single directory match
+                        await RebuildRightSideAsync(State.ActiveColumn);
                     }
                     else if (State.Search.Active
                         && State.Search.NeedsRecompute
@@ -2903,7 +2904,7 @@ static class Program
         if (key.Key == ConsoleKey.DownArrow ||
             (key.Key == ConsoleKey.N && (key.Modifiers & ConsoleModifiers.Control) != 0))
         {
-            MoveLeapCursorDown();
+            await MoveLeapCursorDownAsync();
             return;
         }
 
@@ -2911,7 +2912,7 @@ static class Program
         if (key.Key == ConsoleKey.UpArrow ||
             (key.Key == ConsoleKey.P && (key.Modifiers & ConsoleModifiers.Control) != 0))
         {
-            MoveLeapCursorUp();
+            await MoveLeapCursorUpAsync();
             return;
         }
 
@@ -2938,6 +2939,7 @@ static class Program
             leap.Buffer = lastSlash >= 0 ? leap.Buffer[..(lastSlash + 1)] : "";
             leap.NoMatch = false;
             ApplyLeapFilter();
+            await RebuildRightSideAsync(State.ActiveColumn);
             return;
         }
 
@@ -3031,16 +3033,17 @@ static class Program
         ApplyLeapFilter();
     }
 
-    static void MoveLeapCursorDown()
+    static async Task MoveLeapCursorDownAsync()
     {
         List<int> vis = State.Leap.VisibleIndices;
         if (vis.Count == 0) return;
         int cur = vis.IndexOf(Columns[State.ActiveColumn].Selected);
         int next = Math.Min(cur + 1, vis.Count - 1);
         Columns[State.ActiveColumn].Selected = vis[next];
+        await RebuildRightSideOrValidateAsync();
     }
 
-    static void MoveLeapCursorUp()
+    static async Task MoveLeapCursorUpAsync()
     {
         List<int> vis = State.Leap.VisibleIndices;
         if (vis.Count == 0) return;
@@ -3048,6 +3051,22 @@ static class Program
         if (cur < 0) cur = vis.Count;
         int prev = Math.Max(cur - 1, 0);
         Columns[State.ActiveColumn].Selected = vis[prev];
+        await RebuildRightSideOrValidateAsync();
+    }
+
+    // Same debounce policy as MoveUpAsync/MoveDownAsync: full rebuild once the cursor
+    // is stable, cheap validate-and-prune while keys are still repeating.
+    static async Task RebuildRightSideOrValidateAsync()
+    {
+        if (IsNavigationDebounced())
+        {
+            await RebuildRightSideAsync(State.ActiveColumn);
+        }
+        else
+        {
+            CancelRightSideReads(State.ActiveColumn);
+            await ValidateAndRebuildRightPaneIfNeeded(State.ActiveColumn);
+        }
     }
 
     static void ApplyLeapFilter()
@@ -3303,6 +3322,11 @@ static class Program
     static string? GetSelectedDirectory(int columnIndex)
     {
         if (columnIndex < 0 || columnIndex >= Columns.Count)
+            return null;
+
+        // Leap filter with zero matches means the active column has no effective
+        // selection right now — cascade that as "no selection" to child panes.
+        if (State.Leap.Active && columnIndex == State.ActiveColumn && State.Leap.NoMatch)
             return null;
 
         Column c = Columns[columnIndex];
