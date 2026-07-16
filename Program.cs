@@ -257,6 +257,33 @@ static class NavigationHelper
     {
         c.Selected = Math.Max(0, c.Entries.Count - 1);
     }
+
+    /// <summary>
+    /// Cursor-memory fallback: entries is sorted as two blocks (directories then files).
+    /// Returns the index of the nearest neighbor to a missingTarget name within its own
+    /// block — the last entry sorting before it (previous), or the block's first entry
+    /// if missingTarget was the block's smallest (next). Falls back to clamping
+    /// currentSelected into range if the whole block is now empty.
+    /// </summary>
+    public static int FindNearestIndex(List<string> entries, int directoriesCount, string missingTarget, int currentSelected)
+    {
+        bool wasDir = missingTarget.EndsWith("/");
+        int start = wasDir ? 0 : directoriesCount;
+        int end = wasDir ? directoriesCount : entries.Count;
+
+        if (start >= end)
+            return entries.Count == 0 ? 0 : Math.Clamp(currentSelected, 0, entries.Count - 1);
+
+        int nearest = start;
+        for (int i = start; i < end; i++)
+        {
+            if (string.Compare(entries[i], missingTarget, StringComparison.OrdinalIgnoreCase) < 0)
+                nearest = i;
+            else
+                break;
+        }
+        return nearest;
+    }
 }
 
 /// <summary>
@@ -1678,6 +1705,9 @@ static class Program
     static readonly ScreenState State = new ScreenState();
     static DateTime _lastNavigationTime = DateTime.MinValue;
     static string? _lastErrorMessage = null;
+    static string? _missingEntryMessage = null;
+    static Column? _missingEntryColumn = null;
+    static int _missingEntrySelected = -1;
     static readonly object _searchLock = new object();
     static MigemoProvider? _migemo;
 
@@ -2691,15 +2721,33 @@ static class Program
     static void SeekRestoreTo(Column col)
     {
         if (col.RestoreTo == null) return;
+        if (col.Entries.Count == 0) return; // not loaded yet — retry once entries arrive
+
+        string target = col.RestoreTo;
         for (int i = 0; i < col.Entries.Count; i++)
         {
-            if (col.Entries[i] == col.RestoreTo)
+            if (col.Entries[i] == target)
             {
                 col.Selected = i;
                 col.RestoreTo = null;
                 return;
             }
         }
+
+        // Remembered entry is gone (deleted/renamed/moved elsewhere). Land on the
+        // nearest neighbor within the same block (directories vs. files, since those
+        // are sorted and displayed as separate groups) instead of jumping to the top.
+        col.RestoreTo = null;
+        col.Selected = NavigationHelper.FindNearestIndex(col.Entries, col.DirectoriesCount, target, col.Selected);
+        SetMissingEntryMessage(col, target); // snapshot taken AFTER Selected is finalized
+    }
+
+    static void SetMissingEntryMessage(Column col, string target)
+    {
+        string name = target.EndsWith("/") ? target[..^1] : target;
+        _missingEntryMessage = $"missing: {name}";
+        _missingEntryColumn = col;
+        _missingEntrySelected = col.Selected;
     }
 
     static void RefreshCurrent()
@@ -3432,6 +3480,16 @@ static class Program
 
     static string[] BuildFrame(int width, int height)
     {
+        // Clear the "missing entry" message as soon as the cursor actually moves
+        // away from where the fallback landed it (any navigation path — arrows,
+        // Leap, Search, Home/End, ... — all show up here since Draw() runs every tick).
+        if (_missingEntryMessage != null)
+        {
+            Column active = Columns[State.ActiveColumn];
+            if (!ReferenceEquals(active, _missingEntryColumn) || active.Selected != _missingEntrySelected)
+                _missingEntryMessage = null;
+        }
+
         string[] frame = new string[height];
 
         // Build frame using segment-based approach
@@ -3517,6 +3575,11 @@ static class Program
             string status = _lastErrorMessage;
             _lastErrorMessage = null;  // Clear error after displaying
             status = CharacterWidth.SmartTruncate(status, width);
+            frame[height - 1] = CharacterWidth.PadToWidth(status, width);
+        }
+        else if (_missingEntryMessage != null)
+        {
+            string status = CharacterWidth.SmartTruncate(_missingEntryMessage, width);
             frame[height - 1] = CharacterWidth.PadToWidth(status, width);
         }
         else

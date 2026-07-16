@@ -68,4 +68,54 @@ public class NavigationTests
         NavigationHelper.PageDown(c, visibleHeight: 10);
         Assert.Equal(0, c.Selected); // unchanged
     }
+
+    [Fact]
+    public void FindNearestIndex_FileRemoved_LandsOnPreviousFileInBlock()
+    {
+        // dirs: alpha/, delta/ ; files: bravo.txt (missing), charlie.txt, echo.txt
+        var entries = new List<string> { "alpha/", "delta/", "charlie.txt", "echo.txt" };
+        int idx = NavigationHelper.FindNearestIndex(entries, directoriesCount: 2, missingTarget: "bravo.txt", currentSelected: 2);
+        Assert.Equal(2, idx); // "charlie.txt" is the first file, nothing sorts before "bravo.txt" among files -> next
+    }
+
+    [Fact]
+    public void FindNearestIndex_FileRemoved_LandsOnPreviousWhenMiddleOfBlock()
+    {
+        var entries = new List<string> { "alpha.txt", "charlie.txt", "echo.txt" };
+        int idx = NavigationHelper.FindNearestIndex(entries, directoriesCount: 0, missingTarget: "delta.txt", currentSelected: 1);
+        Assert.Equal(1, idx); // "charlie.txt" sorts just before "delta.txt"
+    }
+
+    [Fact]
+    public void FindNearestIndex_TopmostFileRemoved_LandsOnNewFirstFile()
+    {
+        var entries = new List<string> { "bravo.txt", "charlie.txt" };
+        int idx = NavigationHelper.FindNearestIndex(entries, directoriesCount: 0, missingTarget: "alpha.txt", currentSelected: 0);
+        Assert.Equal(0, idx); // nothing sorts before "alpha.txt" -> lands on new first entry
+    }
+
+    [Fact]
+    public void FindNearestIndex_DirRemoved_StaysWithinDirectoryBlock()
+    {
+        // dirs: alpha/, charlie/ ; files: aaa.txt (would sort before "bravo/" as plain text, must not be picked)
+        var entries = new List<string> { "alpha/", "charlie/", "aaa.txt" };
+        int idx = NavigationHelper.FindNearestIndex(entries, directoriesCount: 2, missingTarget: "bravo/", currentSelected: 0);
+        Assert.Equal(0, idx); // "alpha/" is nearest previous dir; the file block must be ignored
+    }
+
+    [Fact]
+    public void FindNearestIndex_WholeBlockGone_ClampsCurrentSelected()
+    {
+        var entries = new List<string> { "alpha/", "charlie/" }; // no files left at all
+        int idx = NavigationHelper.FindNearestIndex(entries, directoriesCount: 2, missingTarget: "zzz.txt", currentSelected: 5);
+        Assert.Equal(1, idx); // clamped to last valid index
+    }
+
+    [Fact]
+    public void FindNearestIndex_EverythingGone_ReturnsZero()
+    {
+        var entries = new List<string>();
+        int idx = NavigationHelper.FindNearestIndex(entries, directoriesCount: 0, missingTarget: "gone.txt", currentSelected: 3);
+        Assert.Equal(0, idx);
+    }
 }
