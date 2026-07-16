@@ -287,6 +287,26 @@ static class NavigationHelper
 }
 
 /// <summary>
+/// Thread-safe "redraw requested" latch. Background completions call Request();
+/// the main loop calls ShouldDraw() once per tick, consuming any pending request
+/// atomically. A Request() arriving during BuildFrame survives to the next tick.
+/// Convention: any new background mutation of render-visible state must call
+/// Request() as its LAST step.
+/// </summary>
+sealed class RedrawGate
+{
+    int _requested = 1; // start dirty: first frame always draws
+
+    public void Request() => Interlocked.Exchange(ref _requested, 1);
+
+    public bool ShouldDraw(bool activityInProgress)
+    {
+        bool requested = Interlocked.Exchange(ref _requested, 0) == 1;
+        return requested || activityInProgress;
+    }
+}
+
+/// <summary>
 /// Proper CJK character width handling (adapted from twf\Utilities\CharacterWidthHelper.cs)
 /// </summary>
 static class CharacterWidth
@@ -1708,6 +1728,8 @@ static class Program
     static string? _missingEntryMessage = null;
     static Column? _missingEntryColumn = null;
     static int _missingEntrySelected = -1;
+    static readonly RedrawGate _redrawGate = new RedrawGate();
+    static long _framesBuilt; // diagnostic: printed on exit when ZRR_DEBUG_FRAMES is set
     static readonly object _searchLock = new object();
     static MigemoProvider? _migemo;
 
@@ -1744,7 +1766,8 @@ static class Program
             while (true)
             {
                 HandleResizeIfNeeded();
-                Draw();
+                if (_redrawGate.ShouldDraw(UiActivityInProgress()) || State.PrevFrame == null)
+                    Draw();
 
                 if (!Console.KeyAvailable)
                 {
@@ -1756,6 +1779,7 @@ static class Program
                         ApplyLeapFilter();
                         await TryLeapAutoEnterAsync(); // auto-enter single directory match
                         await RebuildRightSideAsync(State.ActiveColumn);
+                        _redrawGate.Request();
                     }
                     else if (State.Search.Active
                         && State.Search.NeedsRecompute
@@ -1765,12 +1789,14 @@ static class Program
                         UpdateHorizontalScroll();
                         await RebuildRightSideAsync(State.ActiveColumn);
                         if (State.Preview.IsVisible) StartPreviewLoad();
+                        _redrawGate.Request();
                     }
                     System.Threading.Thread.Sleep(50);
                     continue;
                 }
 
                 ConsoleKeyInfo key = Console.ReadKey(true);
+                _redrawGate.Request(); // any key → state may change → redraw next loop pass
 
                 if (State.Leap.Active)
                 {
@@ -1800,6 +1826,8 @@ static class Program
             try { Console.CursorVisible = true; } catch { }
             Console.Write("\x1b[?1049l"); // Leave alternate screen buffer
             _migemo?.Dispose();
+            if (Environment.GetEnvironmentVariable("ZRR_DEBUG_FRAMES") != null)
+                Console.WriteLine($"frames built: {_framesBuilt}");
         }
     }
 
@@ -1947,11 +1975,11 @@ static class Program
                 {
                     State.Preview.Content = content;
                     State.Preview.IsLoading = false;
-                    // No Draw() here — main loop polls every 50 ms and picks up the new content
+                    _redrawGate.Request(); // signal main loop to redraw with the new content
                 }
             }
             catch (OperationCanceledException) { }
-            catch (Exception ex) { State.Preview.Content = new PreviewContent("Error", ex.Message, "", [], false); State.Preview.IsLoading = false; }
+            catch (Exception ex) { State.Preview.Content = new PreviewContent("Error", ex.Message, "", [], false); State.Preview.IsLoading = false; _redrawGate.Request(); }
         }, cts.Token);
     }
 
@@ -2324,6 +2352,7 @@ static class Program
                 }
                 column.IsLoading = false;
                 SeekRestoreTo(column);
+                _redrawGate.Request();
             }
         }, ct);
 
@@ -2772,6 +2801,7 @@ static class Program
         Columns[State.ActiveColumn] = refreshed;
 
         await RebuildRightSideAsync(State.ActiveColumn);
+        _redrawGate.Request();
     }
 
     static async Task RecomputeMatchesAsync()
@@ -3452,6 +3482,20 @@ static class Program
             StartPreviewLoad(forceReload: true);
     }
 
+    static bool AnyColumnLoading()
+    {
+        for (int i = 0; i < Columns.Count; i++)
+            if (Columns[i].IsLoading) return true;
+        return false;
+    }
+
+    static bool UiActivityInProgress()
+    {
+        return AnyColumnLoading()
+            || State.Preview.IsLoading
+            || (State.Search.Active && !State.Search.SearchDone);
+    }
+
     static void Draw()
     {
         int width = Console.WindowWidth;
@@ -3480,9 +3524,11 @@ static class Program
 
     static string[] BuildFrame(int width, int height)
     {
+        _framesBuilt++;
+
         // Clear the "missing entry" message as soon as the cursor actually moves
-        // away from where the fallback landed it (any navigation path — arrows,
-        // Leap, Search, Home/End, ... — all show up here since Draw() runs every tick).
+        // away from where the fallback landed it (every cursor move triggers a
+        // redraw, so this check runs on the frame that follows the move).
         if (_missingEntryMessage != null)
         {
             Column active = Columns[State.ActiveColumn];
