@@ -2895,65 +2895,65 @@ static class Program
         }
     }
 
-    static void EnterLeapMode()
+    static void EnterLeapMode(Pane pane)
     {
-        Column col = Columns[State.ActiveColumn];
-        State.Leap.Active = true;
-        State.Leap.Buffer = "";
-        State.Leap.RootDir = col.Path;
-        State.Leap.RootColumnIndex = State.ActiveColumn;
-        State.Leap.RootCursorIndex = col.Selected;
-        State.Leap.DirStack.Clear();
-        State.Leap.NeedsRecompute = false;
-        State.Leap.NoMatch = false;
-        State.Leap.VisibleIndices.Clear();
-        State.Leap.ColumnScrollOffset = 0;
-        State.Leap.PreviewWasVisible = State.Preview.IsVisible;
-        if (State.Preview.IsVisible)
+        Column col = pane.Columns[pane.ActiveColumn];
+        pane.Leap.Active = true;
+        pane.Leap.Buffer = "";
+        pane.Leap.RootDir = col.Path;
+        pane.Leap.RootColumnIndex = pane.ActiveColumn;
+        pane.Leap.RootCursorIndex = col.Selected;
+        pane.Leap.DirStack.Clear();
+        pane.Leap.NeedsRecompute = false;
+        pane.Leap.NoMatch = false;
+        pane.Leap.VisibleIndices.Clear();
+        pane.Leap.ColumnScrollOffset = 0;
+        pane.Leap.PreviewWasVisible = pane.Preview.IsVisible;
+        if (pane.Preview.IsVisible)
         {
-            CancelPreviewLoad();
-            State.Preview.IsVisible = false;
+            CancelPreviewLoad(pane);
+            pane.Preview.IsVisible = false;
         }
-        UpdateHorizontalScroll();
-        ApplyLeapFilter(); // empty filter = all entries visible
+        UpdateHorizontalScroll(pane);
+        ApplyLeapFilter(pane); // empty filter = all entries visible
     }
 
-    static async Task ExitLeapModeAsync(bool restoreCursor)
+    static async Task ExitLeapModeAsync(Pane pane, bool restoreCursor)
     {
-        State.Leap.Active = false;
-        State.Leap.NoMatch = false;
+        pane.Leap.Active = false;
+        pane.Leap.NoMatch = false;
         if (restoreCursor)
         {
-            State.ActiveColumn = State.Leap.RootColumnIndex;
-            Columns[State.ActiveColumn].Selected = State.Leap.RootCursorIndex;
+            pane.ActiveColumn = pane.Leap.RootColumnIndex;
+            pane.Columns[pane.ActiveColumn].Selected = pane.Leap.RootCursorIndex;
         }
-        State.Preview.IsVisible = State.Leap.PreviewWasVisible;
-        UpdateHorizontalScroll();
-        await RebuildRightSideAsync(State.ActiveColumn);
-        if (State.Preview.IsVisible) StartPreviewLoad();
+        pane.Preview.IsVisible = pane.Leap.PreviewWasVisible;
+        UpdateHorizontalScroll(pane);
+        await RebuildRightSideAsync(pane, pane.ActiveColumn);
+        if (pane.Preview.IsVisible) StartPreviewLoad(pane);
     }
 
-    static async Task HandleLeapKeyAsync(ConsoleKeyInfo key)
+    static async Task HandleLeapKeyAsync(Pane pane, ConsoleKeyInfo key)
     {
-        LeapState leap = State.Leap;
-        Column col = Columns[State.ActiveColumn];
+        LeapState leap = pane.Leap;
+        Column col = pane.Columns[pane.ActiveColumn];
 
         if (key.Key == ConsoleKey.F3)
         {
-            await ExitLeapModeAsync(restoreCursor: false);
+            await ExitLeapModeAsync(pane, restoreCursor: false);
             return;
         }
 
         if (key.Key == ConsoleKey.Escape)
         {
-            await ExitLeapModeAsync(restoreCursor: true);
+            await ExitLeapModeAsync(pane, restoreCursor: true);
             return;
         }
 
         // Ctrl+Enter: land here and exit (no open, no enter)
         if (key.Key == ConsoleKey.Enter && (key.Modifiers & ConsoleModifiers.Control) != 0)
         {
-            await ExitLeapModeAsync(restoreCursor: false);
+            await ExitLeapModeAsync(pane, restoreCursor: false);
             return;
         }
 
@@ -2963,11 +2963,11 @@ static class Program
             if (col.Entries.Count == 0) return;
             string name = col.Entries[col.Selected];
             if (name.EndsWith("/"))
-                await EnterDirInLeapAsync();
+                await EnterDirInLeapAsync(pane);
             else
             {
-                string filePath = GetCurrentFullPath();
-                await ExitLeapModeAsync(restoreCursor: false);
+                string filePath = GetCurrentFullPath(pane);
+                await ExitLeapModeAsync(pane, restoreCursor: false);
                 await LaunchFileAsync(filePath);
             }
             return;
@@ -2979,9 +2979,9 @@ static class Program
             if (col.Entries.Count == 0) return;
             string name = col.Entries[col.Selected];
             if (name.EndsWith("/"))
-                await EnterDirInLeapAsync();
+                await EnterDirInLeapAsync(pane);
             else
-                await ExitLeapModeAsync(restoreCursor: false);
+                await ExitLeapModeAsync(pane, restoreCursor: false);
             return;
         }
 
@@ -2991,7 +2991,7 @@ static class Program
             int lastSlash = leap.Buffer.LastIndexOf('/');
             if (lastSlash >= 0)
                 leap.Buffer = leap.Buffer[..lastSlash];
-            await LeapStepUpAsync();
+            await LeapStepUpAsync(pane);
             return;
         }
 
@@ -2999,7 +2999,7 @@ static class Program
         if (key.Key == ConsoleKey.DownArrow ||
             (key.Key == ConsoleKey.N && (key.Modifiers & ConsoleModifiers.Control) != 0))
         {
-            await MoveLeapCursorDownAsync();
+            await MoveLeapCursorDownAsync(pane);
             return;
         }
 
@@ -3007,7 +3007,7 @@ static class Program
         if (key.Key == ConsoleKey.UpArrow ||
             (key.Key == ConsoleKey.P && (key.Modifiers & ConsoleModifiers.Control) != 0))
         {
-            await MoveLeapCursorUpAsync();
+            await MoveLeapCursorUpAsync(pane);
             return;
         }
 
@@ -3018,7 +3018,7 @@ static class Program
             char removed = leap.Buffer[^1];
             leap.Buffer = leap.Buffer[..^1];
             if (removed == '/')
-                await LeapStepUpAsync();
+                await LeapStepUpAsync(pane);
             else
             {
                 leap.NeedsRecompute = true;
@@ -3033,15 +3033,15 @@ static class Program
             int lastSlash = leap.Buffer.LastIndexOf('/');
             leap.Buffer = lastSlash >= 0 ? leap.Buffer[..(lastSlash + 1)] : "";
             leap.NoMatch = false;
-            ApplyLeapFilter();
-            await RebuildRightSideAsync(State.ActiveColumn);
+            ApplyLeapFilter(pane);
+            await RebuildRightSideAsync(pane, pane.ActiveColumn);
             return;
         }
 
         // Ctrl+K: return to leap root
         if (key.Key == ConsoleKey.K && (key.Modifiers & ConsoleModifiers.Control) != 0)
         {
-            await GoLeapRootAsync();
+            await GoLeapRootAsync(pane);
             return;
         }
 
@@ -3051,7 +3051,7 @@ static class Program
             if (col.Entries.Count > 0 && col.Selected >= 0 && col.Selected < col.Entries.Count
                 && col.Entries[col.Selected].EndsWith("/"))
             {
-                await EnterDirInLeapAsync();
+                await EnterDirInLeapAsync(pane);
             }
             return;
         }
@@ -3065,109 +3065,109 @@ static class Program
         }
     }
 
-    static async Task EnterDirInLeapAsync()
+    static async Task EnterDirInLeapAsync(Pane pane)
     {
-        Column col = Columns[State.ActiveColumn];
+        Column col = pane.Columns[pane.ActiveColumn];
         if (col.Entries.Count == 0 || col.Selected >= col.Entries.Count) return;
         string name = col.Entries[col.Selected];
         if (!name.EndsWith("/")) return;
 
         // Append "/" to buffer (local filter stays as the part that matched)
-        State.Leap.Buffer += "/";
-        State.Leap.DirStack.Add((col.Path, State.Leap.Buffer.Length));
+        pane.Leap.Buffer += "/";
+        pane.Leap.DirStack.Add((col.Path, pane.Leap.Buffer.Length));
 
         // Navigate into the directory (same as EnterAsync, but preview stays frozen during leap)
-        State.ActiveColumn++;
-        UpdateHorizontalScroll();
-        await RebuildRightSideAsync(State.ActiveColumn - 1);
+        pane.ActiveColumn++;
+        UpdateHorizontalScroll(pane);
+        await RebuildRightSideAsync(pane, pane.ActiveColumn - 1);
 
         // Reset leap filter state for new directory
-        State.Leap.NoMatch = false;
-        State.Leap.ColumnScrollOffset = 0;
-        ApplyLeapFilter(); // empty local filter = all entries visible
-        await TryLeapAutoEnterAsync(); // cascade through further singleton directories
+        pane.Leap.NoMatch = false;
+        pane.Leap.ColumnScrollOffset = 0;
+        ApplyLeapFilter(pane); // empty local filter = all entries visible
+        await TryLeapAutoEnterAsync(pane); // cascade through further singleton directories
     }
 
-    static async Task TryLeapAutoEnterAsync()
+    static async Task TryLeapAutoEnterAsync(Pane pane)
     {
-        if (State.Leap.NoMatch || State.Leap.VisibleIndices.Count != 1) return;
-        Column ac = Columns[State.ActiveColumn];
+        if (pane.Leap.NoMatch || pane.Leap.VisibleIndices.Count != 1) return;
+        Column ac = pane.Columns[pane.ActiveColumn];
         if (ac.Entries.Count > 0 && ac.Selected < ac.Entries.Count
             && ac.Entries[ac.Selected].EndsWith("/"))
-            await EnterDirInLeapAsync();
+            await EnterDirInLeapAsync(pane);
     }
 
-    static async Task LeapStepUpAsync()
+    static async Task LeapStepUpAsync(Pane pane)
     {
-        if (State.ActiveColumn <= State.Leap.RootColumnIndex) return;
+        if (pane.ActiveColumn <= pane.Leap.RootColumnIndex) return;
 
-        if (State.Leap.DirStack.Count > 0)
-            State.Leap.DirStack.RemoveAt(State.Leap.DirStack.Count - 1);
+        if (pane.Leap.DirStack.Count > 0)
+            pane.Leap.DirStack.RemoveAt(pane.Leap.DirStack.Count - 1);
 
-        State.ActiveColumn--;
-        UpdateHorizontalScroll();
-        await RebuildRightSideAsync(State.ActiveColumn);
+        pane.ActiveColumn--;
+        UpdateHorizontalScroll(pane);
+        await RebuildRightSideAsync(pane, pane.ActiveColumn);
         // Preview stays frozen during leap; updated on exit
 
-        State.Leap.NoMatch = false;
-        State.Leap.ColumnScrollOffset = 0;
-        ApplyLeapFilter();
+        pane.Leap.NoMatch = false;
+        pane.Leap.ColumnScrollOffset = 0;
+        ApplyLeapFilter(pane);
     }
 
-    static async Task GoLeapRootAsync()
+    static async Task GoLeapRootAsync(Pane pane)
     {
-        while (State.ActiveColumn > State.Leap.RootColumnIndex)
-            State.ActiveColumn--;
-        State.Leap.DirStack.Clear();
-        State.Leap.Buffer = "";
-        UpdateHorizontalScroll();
-        await RebuildRightSideAsync(State.ActiveColumn);
+        while (pane.ActiveColumn > pane.Leap.RootColumnIndex)
+            pane.ActiveColumn--;
+        pane.Leap.DirStack.Clear();
+        pane.Leap.Buffer = "";
+        UpdateHorizontalScroll(pane);
+        await RebuildRightSideAsync(pane, pane.ActiveColumn);
         // Preview stays frozen during leap; updated on exit
-        State.Leap.NoMatch = false;
-        State.Leap.ColumnScrollOffset = 0;
-        ApplyLeapFilter();
+        pane.Leap.NoMatch = false;
+        pane.Leap.ColumnScrollOffset = 0;
+        ApplyLeapFilter(pane);
     }
 
-    static async Task MoveLeapCursorDownAsync()
+    static async Task MoveLeapCursorDownAsync(Pane pane)
     {
-        List<int> vis = State.Leap.VisibleIndices;
+        List<int> vis = pane.Leap.VisibleIndices;
         if (vis.Count == 0) return;
-        int cur = vis.IndexOf(Columns[State.ActiveColumn].Selected);
+        int cur = vis.IndexOf(pane.Columns[pane.ActiveColumn].Selected);
         int next = Math.Min(cur + 1, vis.Count - 1);
-        Columns[State.ActiveColumn].Selected = vis[next];
-        await RebuildRightSideOrValidateAsync();
+        pane.Columns[pane.ActiveColumn].Selected = vis[next];
+        await RebuildRightSideOrValidateAsync(pane);
     }
 
-    static async Task MoveLeapCursorUpAsync()
+    static async Task MoveLeapCursorUpAsync(Pane pane)
     {
-        List<int> vis = State.Leap.VisibleIndices;
+        List<int> vis = pane.Leap.VisibleIndices;
         if (vis.Count == 0) return;
-        int cur = vis.IndexOf(Columns[State.ActiveColumn].Selected);
+        int cur = vis.IndexOf(pane.Columns[pane.ActiveColumn].Selected);
         if (cur < 0) cur = vis.Count;
         int prev = Math.Max(cur - 1, 0);
-        Columns[State.ActiveColumn].Selected = vis[prev];
-        await RebuildRightSideOrValidateAsync();
+        pane.Columns[pane.ActiveColumn].Selected = vis[prev];
+        await RebuildRightSideOrValidateAsync(pane);
     }
 
     // Same debounce policy as MoveUpAsync/MoveDownAsync: full rebuild once the cursor
     // is stable, cheap validate-and-prune while keys are still repeating.
-    static async Task RebuildRightSideOrValidateAsync()
+    static async Task RebuildRightSideOrValidateAsync(Pane pane)
     {
         if (IsNavigationDebounced())
         {
-            await RebuildRightSideAsync(State.ActiveColumn);
+            await RebuildRightSideAsync(pane, pane.ActiveColumn);
         }
         else
         {
-            CancelRightSideReads(State.ActiveColumn);
-            await ValidateAndRebuildRightPaneIfNeeded(State.ActiveColumn);
+            CancelRightSideReads(pane, pane.ActiveColumn);
+            await ValidateAndRebuildRightPaneIfNeeded(pane, pane.ActiveColumn);
         }
     }
 
-    static void ApplyLeapFilter()
+    static void ApplyLeapFilter(Pane pane)
     {
-        LeapState leap = State.Leap;
-        Column col = Columns[State.ActiveColumn];
+        LeapState leap = pane.Leap;
+        Column col = pane.Columns[pane.ActiveColumn];
 
         // Extract local filter = everything after the last "/"
         int lastSlash = leap.Buffer.LastIndexOf('/');
