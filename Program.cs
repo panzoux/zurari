@@ -2595,9 +2595,9 @@ static class Program
         pane.HorizontalScroll = Math.Max(minHS, Math.Min(pane.HorizontalScroll, maxHS));
     }
 
-    static async Task EnterAsync()
+    static async Task EnterAsync(Pane pane)
     {
-        Column c = Columns[State.ActiveColumn];
+        Column c = pane.Columns[pane.ActiveColumn];
 
         if (c.Entries.Count == 0)
             return;
@@ -2607,24 +2607,24 @@ static class Program
         if (!name.EndsWith("/"))
             return;
 
-        if (State.ActiveColumn + 1 < Columns.Count)
+        if (pane.ActiveColumn + 1 < pane.Columns.Count)
         {
-            State.ActiveColumn++;
+            pane.ActiveColumn++;
         }
         else
         {
-            State.ActiveColumn++;
+            pane.ActiveColumn++;
         }
 
-        UpdateHorizontalScroll();
-        CancelPreviewLoad();
-        if (State.Preview.IsVisible) StartPreviewLoad();
-        await RebuildRightSideAsync(State.ActiveColumn - 1);
+        UpdateHorizontalScroll(pane);
+        CancelPreviewLoad(pane);
+        if (pane.Preview.IsVisible) StartPreviewLoad(pane);
+        await RebuildRightSideAsync(pane, pane.ActiveColumn - 1);
     }
 
-    static async Task OpenFileAsync()
+    static async Task OpenFileAsync(Pane pane)
     {
-        Column c = Columns[State.ActiveColumn];
+        Column c = pane.Columns[pane.ActiveColumn];
 
         if (c.Entries.Count == 0)
             return;
@@ -2635,7 +2635,7 @@ static class Program
         if (name.EndsWith("/"))
             return;
 
-        string filePath = GetCurrentFullPath();
+        string filePath = GetCurrentFullPath(pane);
         await LaunchFileAsync(filePath);
     }
 
@@ -2671,13 +2671,13 @@ static class Program
         await Task.CompletedTask;
     }
 
-    static async Task ShowContextMenuAsync()
+    static async Task ShowContextMenuAsync(Pane pane)
     {
         // Windows only - show context menu
         if (!IsWindows())
             return;
 
-        Column c = Columns[State.ActiveColumn];
+        Column c = pane.Columns[pane.ActiveColumn];
 
         if (c.Entries.Count == 0)
             return;
@@ -2685,7 +2685,7 @@ static class Program
         string name = c.Entries[c.Selected];
 
 
-        string filePath = GetCurrentFullPath();
+        string filePath = GetCurrentFullPath(pane);
         await LaunchContextMenuAsync(filePath);
     }
 
