@@ -490,16 +490,31 @@ sealed class Column
     }
 }
 
-sealed class ScreenState
+sealed class Pane
 {
+    public List<Column> Columns = new();
     public int ActiveColumn;
     public int HorizontalScroll;
+    public SearchState Search = new();
+    public LeapState Leap = new();
+    public PreviewPane Preview = new();
+    public bool NeedsRefresh; // ジョブ完了時の遅延再読込用 dirty フラグ(Phase 7 で使用)
+}
+
+sealed class ScreenState
+{
     public string[]? PrevFrame;
     public int PrevWidth;
     public int PrevHeight;
-    public readonly PreviewPane Preview = new();
-    public SearchState Search = new();
-    public LeapState Leap = new();
+    public List<Pane> Panes = new();   // 常に1〜2要素
+    public int FocusedPane;            // 0 = 上(または単一), 1 = 下
+    public bool SplitActive;
+    public DialogState? Dialog;        // Phase 3 で追加。今は宣言のみ。
+}
+
+abstract class DialogState
+{
+    public string Title = "";
 }
 
 sealed class SearchState
@@ -1721,8 +1736,8 @@ static class Program
     const int MaxPathLength = 100;
     const int NavigationDebounceMs = 300;
 
-    static readonly List<Column> Columns = new List<Column>();
     static readonly ScreenState State = new ScreenState();
+    static Pane FocusedPane => State.Panes[State.FocusedPane];
     static DateTime _lastNavigationTime = DateTime.MinValue;
     static string? _lastErrorMessage = null;
     static string? _missingEntryMessage = null;
@@ -1760,7 +1775,9 @@ static class Program
         try
         {
             string root = GetRootPath();
-            Columns.Add(CreateColumn(root));
+            State.Panes.Add(new Pane());
+            State.FocusedPane = 0;
+            FocusedPane.Columns.Add(CreateColumn(root));
             await RebuildRightSideAsync(0);
 
             while (true)
