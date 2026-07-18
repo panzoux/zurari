@@ -2821,24 +2821,24 @@ static class Program
         _redrawGate.Request();
     }
 
-    static async Task RecomputeMatchesAsync()
+    static async Task RecomputeMatchesAsync(Pane pane)
     {
         // Cancel any in-progress scan
-        State.Search.SearchCts?.Cancel();
-        State.Search.SearchCts?.Dispose();
+        pane.Search.SearchCts?.Cancel();
+        pane.Search.SearchCts?.Dispose();
         var cts = new CancellationTokenSource();
-        State.Search.SearchCts = cts;
+        pane.Search.SearchCts = cts;
 
-        string query = State.Search.Query;
-        bool regexMode = State.Search.RegexMode;
-        int anchor = State.Search.Anchor;
-        Column col = Columns[State.ActiveColumn];
+        string query = pane.Search.Query;
+        bool regexMode = pane.Search.RegexMode;
+        int anchor = pane.Search.Anchor;
+        Column col = pane.Columns[pane.ActiveColumn];
 
         lock (_searchLock)
         {
-            State.Search.Matches.Clear();
-            State.Search.SearchDone = false;
-            State.Search.NeedsRecompute = false;
+            pane.Search.Matches.Clear();
+            pane.Search.SearchDone = false;
+            pane.Search.NeedsRecompute = false;
         }
 
         await Task.Run(() =>
@@ -2849,7 +2849,7 @@ static class Program
                 string name = col.Entries[i].TrimEnd('/');
                 if (SearchHelper.MatchesSearchQuery(name, query, regexMode, _migemo))
                 {
-                    lock (_searchLock) { State.Search.Matches.Add(i); }
+                    lock (_searchLock) { pane.Search.Matches.Add(i); }
                 }
             }
 
@@ -2857,41 +2857,41 @@ static class Program
 
             lock (_searchLock)
             {
-                State.Search.MatchIndex = SearchHelper.FindNearestMatchIndex(State.Search.Matches, anchor);
-                if (State.Search.Matches.Count > 0)
-                    col.Selected = State.Search.Matches[State.Search.MatchIndex];
-                State.Search.SearchDone = true;
+                pane.Search.MatchIndex = SearchHelper.FindNearestMatchIndex(pane.Search.Matches, anchor);
+                if (pane.Search.Matches.Count > 0)
+                    col.Selected = pane.Search.Matches[pane.Search.MatchIndex];
+                pane.Search.SearchDone = true;
             }
         }, cts.Token);
     }
 
-    static void EnterSearchMode()
+    static void EnterSearchMode(Pane pane)
     {
-        Column col = Columns[State.ActiveColumn];
-        State.Search.Active = true;
-        State.Search.Anchor = col.Selected;
-        State.Search.Query = "";
-        State.Search.RegexMode = false;
+        Column col = pane.Columns[pane.ActiveColumn];
+        pane.Search.Active = true;
+        pane.Search.Anchor = col.Selected;
+        pane.Search.Query = "";
+        pane.Search.RegexMode = false;
         lock (_searchLock)
         {
-            State.Search.Matches.Clear();
-            State.Search.SearchDone = true;
-            State.Search.NeedsRecompute = false;
+            pane.Search.Matches.Clear();
+            pane.Search.SearchDone = true;
+            pane.Search.NeedsRecompute = false;
         }
     }
 
-    static void ExitSearchMode(bool restoreCursor)
+    static void ExitSearchMode(Pane pane, bool restoreCursor)
     {
-        State.Search.SearchCts?.Cancel();
-        State.Search.SearchCts?.Dispose();
-        State.Search.SearchCts = null;
-        State.Search.Active = false;
+        pane.Search.SearchCts?.Cancel();
+        pane.Search.SearchCts?.Dispose();
+        pane.Search.SearchCts = null;
+        pane.Search.Active = false;
         if (restoreCursor)
-            Columns[State.ActiveColumn].Selected = State.Search.Anchor;
+            pane.Columns[pane.ActiveColumn].Selected = pane.Search.Anchor;
         lock (_searchLock)
         {
-            State.Search.Matches.Clear();
-            State.Search.SearchDone = true;
+            pane.Search.Matches.Clear();
+            pane.Search.SearchDone = true;
         }
     }
 
@@ -3270,26 +3270,26 @@ static class Program
         return segments.Count > 0 ? segments.ToArray() : new[] { filter };
     }
 
-    static async Task HandleSearchKeyAsync(ConsoleKeyInfo key)
+    static async Task HandleSearchKeyAsync(Pane pane, ConsoleKeyInfo key)
     {
-        SearchState s = State.Search;
-        Column col = Columns[State.ActiveColumn];
+        SearchState s = pane.Search;
+        Column col = pane.Columns[pane.ActiveColumn];
 
         if (key.Key == ConsoleKey.Escape)
         {
-            ExitSearchMode(restoreCursor: true);
-            UpdateHorizontalScroll();
-            await RebuildRightSideAsync(State.ActiveColumn);
-            if (State.Preview.IsVisible) StartPreviewLoad();
+            ExitSearchMode(pane, restoreCursor: true);
+            UpdateHorizontalScroll(pane);
+            await RebuildRightSideAsync(pane, pane.ActiveColumn);
+            if (pane.Preview.IsVisible) StartPreviewLoad(pane);
             return;
         }
 
         if (key.Key == ConsoleKey.Enter)
         {
-            ExitSearchMode(restoreCursor: false);
-            UpdateHorizontalScroll();
-            await RebuildRightSideAsync(State.ActiveColumn);
-            if (State.Preview.IsVisible) StartPreviewLoad();
+            ExitSearchMode(pane, restoreCursor: false);
+            UpdateHorizontalScroll(pane);
+            await RebuildRightSideAsync(pane, pane.ActiveColumn);
+            if (pane.Preview.IsVisible) StartPreviewLoad(pane);
             return;
         }
 
@@ -3316,9 +3316,9 @@ static class Program
             }
             if (moved)
             {
-                UpdateHorizontalScroll();
-                await RebuildRightSideAsync(State.ActiveColumn);
-                if (State.Preview.IsVisible) StartPreviewLoad();
+                UpdateHorizontalScroll(pane);
+                await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                if (pane.Preview.IsVisible) StartPreviewLoad(pane);
             }
             return;
         }
@@ -3338,9 +3338,9 @@ static class Program
             }
             if (moved)
             {
-                UpdateHorizontalScroll();
-                await RebuildRightSideAsync(State.ActiveColumn);
-                if (State.Preview.IsVisible) StartPreviewLoad();
+                UpdateHorizontalScroll(pane);
+                await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                if (pane.Preview.IsVisible) StartPreviewLoad(pane);
             }
             return;
         }
