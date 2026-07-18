@@ -1778,34 +1778,35 @@ static class Program
             State.Panes.Add(new Pane());
             State.FocusedPane = 0;
             FocusedPane.Columns.Add(CreateColumn(root));
-            await RebuildRightSideAsync(0);
+            await RebuildRightSideAsync(FocusedPane, 0);
 
             while (true)
             {
-                HandleResizeIfNeeded();
-                if (_redrawGate.ShouldDraw(UiActivityInProgress()) || State.PrevFrame == null)
+                HandleResizeIfNeeded(FocusedPane);
+                if (_redrawGate.ShouldDraw(UiActivityInProgress(FocusedPane)) || State.PrevFrame == null)
                     Draw();
 
                 if (!Console.KeyAvailable)
                 {
-                    if (State.Leap.Active
-                        && State.Leap.NeedsRecompute
-                        && (DateTime.UtcNow - State.Leap.LastInputTime).TotalMilliseconds >= NavigationDebounceMs)
+                    Pane pane = FocusedPane;
+                    if (pane.Leap.Active
+                        && pane.Leap.NeedsRecompute
+                        && (DateTime.UtcNow - pane.Leap.LastInputTime).TotalMilliseconds >= NavigationDebounceMs)
                     {
-                        State.Leap.NeedsRecompute = false;
-                        ApplyLeapFilter();
-                        await TryLeapAutoEnterAsync(); // auto-enter single directory match
-                        await RebuildRightSideAsync(State.ActiveColumn);
+                        pane.Leap.NeedsRecompute = false;
+                        ApplyLeapFilter(pane);
+                        await TryLeapAutoEnterAsync(pane); // auto-enter single directory match
+                        await RebuildRightSideAsync(pane, pane.ActiveColumn);
                         _redrawGate.Request();
                     }
-                    else if (State.Search.Active
-                        && State.Search.NeedsRecompute
-                        && (DateTime.UtcNow - State.Search.LastInputTime).TotalMilliseconds >= 300)
+                    else if (pane.Search.Active
+                        && pane.Search.NeedsRecompute
+                        && (DateTime.UtcNow - pane.Search.LastInputTime).TotalMilliseconds >= 300)
                     {
-                        await RecomputeMatchesAsync();
-                        UpdateHorizontalScroll();
-                        await RebuildRightSideAsync(State.ActiveColumn);
-                        if (State.Preview.IsVisible) StartPreviewLoad();
+                        await RecomputeMatchesAsync(pane);
+                        UpdateHorizontalScroll(pane);
+                        await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                        if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                         _redrawGate.Request();
                     }
                     System.Threading.Thread.Sleep(50);
@@ -1815,15 +1816,17 @@ static class Program
                 ConsoleKeyInfo key = Console.ReadKey(true);
                 _redrawGate.Request(); // any key → state may change → redraw next loop pass
 
-                if (State.Leap.Active)
+                Pane focusedPane = FocusedPane;
+
+                if (focusedPane.Leap.Active)
                 {
-                    await HandleLeapKeyAsync(key);
+                    await HandleLeapKeyAsync(focusedPane, key);
                     continue;
                 }
 
-                if (State.Search.Active)
+                if (focusedPane.Search.Active)
                 {
-                    await HandleSearchKeyAsync(key);
+                    await HandleSearchKeyAsync(focusedPane, key);
                     continue;
                 }
 
@@ -1833,7 +1836,7 @@ static class Program
                         return;
 
                     default:
-                        await HandleSpecialKeyAsync(key);
+                        await HandleSpecialKeyAsync(focusedPane, key);
                         break;
                 }
             }
@@ -2007,137 +2010,137 @@ static class Program
         pane.Preview.CurrentPath = null;
     }
 
-    static async Task HandleSpecialKeyAsync(ConsoleKeyInfo key)
+    static async Task HandleSpecialKeyAsync(Pane pane, ConsoleKeyInfo key)
     {
         switch (key.Key)
         {
             case ConsoleKey.UpArrow:
-                await MoveUpAsync();
+                await MoveUpAsync(pane);
                 break;
 
             case ConsoleKey.DownArrow:
-                await MoveDownAsync();
+                await MoveDownAsync(pane);
                 break;
 
             case ConsoleKey.LeftArrow:
-                MoveLeft();
+                MoveLeft(pane);
                 break;
 
             case ConsoleKey.RightArrow:
-                await MoveRightAsync();
+                await MoveRightAsync(pane);
                 break;
 
             case ConsoleKey.Enter:
                 if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
-                    await ShowContextMenuAsync();
+                    await ShowContextMenuAsync(pane);
                 else if ((key.Modifiers & ConsoleModifiers.Control) != 0)
-                    await OpenFileAsync();
+                    await OpenFileAsync(pane);
                 else
-                    await EnterAsync();
+                    await EnterAsync(pane);
                 break;
 
             case ConsoleKey.Backspace:
-                Parent();
+                Parent(pane);
                 break;
 
             case ConsoleKey.V:
                 if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
                 {
-                    State.Preview.IsVisible = !State.Preview.IsVisible;
-                    UpdateHorizontalScroll();
-                    if (State.Preview.IsVisible)
-                        StartPreviewLoad();
+                    pane.Preview.IsVisible = !pane.Preview.IsVisible;
+                    UpdateHorizontalScroll(pane);
+                    if (pane.Preview.IsVisible)
+                        StartPreviewLoad(pane);
                     else
-                        CancelPreviewLoad();
+                        CancelPreviewLoad(pane);
                     Draw();
                 }
                 break;
 
             case ConsoleKey.L:
                 if ((key.Modifiers & ConsoleModifiers.Control) != 0)
-                    RefreshCurrent();
+                    RefreshCurrent(pane);
                 break;
 
             case ConsoleKey.F3:
-                EnterLeapMode();
+                EnterLeapMode(pane);
                 break;
 
             case ConsoleKey.F5:
-                RefreshCurrent();
+                RefreshCurrent(pane);
                 break;
 
             case ConsoleKey.PageUp:
-                NavigationHelper.PageUp(Columns[State.ActiveColumn], Console.WindowHeight - 3);
-                UpdateHorizontalScroll();
-                await RebuildRightSideAsync(State.ActiveColumn);
-                if (State.Preview.IsVisible) StartPreviewLoad();
+                NavigationHelper.PageUp(pane.Columns[pane.ActiveColumn], Console.WindowHeight - 3);
+                UpdateHorizontalScroll(pane);
+                await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 break;
 
             case ConsoleKey.PageDown:
-                NavigationHelper.PageDown(Columns[State.ActiveColumn], Console.WindowHeight - 3);
-                UpdateHorizontalScroll();
-                await RebuildRightSideAsync(State.ActiveColumn);
-                if (State.Preview.IsVisible) StartPreviewLoad();
+                NavigationHelper.PageDown(pane.Columns[pane.ActiveColumn], Console.WindowHeight - 3);
+                UpdateHorizontalScroll(pane);
+                await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 break;
 
             case ConsoleKey.Home:
-                NavigationHelper.GoHome(Columns[State.ActiveColumn]);
-                UpdateHorizontalScroll();
-                await RebuildRightSideAsync(State.ActiveColumn);
-                if (State.Preview.IsVisible) StartPreviewLoad();
+                NavigationHelper.GoHome(pane.Columns[pane.ActiveColumn]);
+                UpdateHorizontalScroll(pane);
+                await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 break;
 
             case ConsoleKey.End:
-                NavigationHelper.GoEnd(Columns[State.ActiveColumn]);
-                UpdateHorizontalScroll();
-                await RebuildRightSideAsync(State.ActiveColumn);
-                if (State.Preview.IsVisible) StartPreviewLoad();
+                NavigationHelper.GoEnd(pane.Columns[pane.ActiveColumn]);
+                UpdateHorizontalScroll(pane);
+                await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 break;
 
             case ConsoleKey.G:
                 if (key.Modifiers == ConsoleModifiers.None)
                 {
                     // g → top (must have NO modifiers)
-                    NavigationHelper.GoHome(Columns[State.ActiveColumn]);
-                    UpdateHorizontalScroll();
-                    await RebuildRightSideAsync(State.ActiveColumn);
-                    if (State.Preview.IsVisible) StartPreviewLoad();
+                    NavigationHelper.GoHome(pane.Columns[pane.ActiveColumn]);
+                    UpdateHorizontalScroll(pane);
+                    await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                    if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 }
                 else if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
                 {
                     // G → bottom
-                    NavigationHelper.GoEnd(Columns[State.ActiveColumn]);
-                    UpdateHorizontalScroll();
-                    await RebuildRightSideAsync(State.ActiveColumn);
-                    if (State.Preview.IsVisible) StartPreviewLoad();
+                    NavigationHelper.GoEnd(pane.Columns[pane.ActiveColumn]);
+                    UpdateHorizontalScroll(pane);
+                    await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                    if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 }
                 break;
 
             case ConsoleKey.B:
                 if ((key.Modifiers & ConsoleModifiers.Control) != 0)
                 {
-                    NavigationHelper.PageUp(Columns[State.ActiveColumn], Console.WindowHeight - 3);
-                    UpdateHorizontalScroll();
-                    await RebuildRightSideAsync(State.ActiveColumn);
-                    if (State.Preview.IsVisible) StartPreviewLoad();
+                    NavigationHelper.PageUp(pane.Columns[pane.ActiveColumn], Console.WindowHeight - 3);
+                    UpdateHorizontalScroll(pane);
+                    await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                    if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 }
                 break;
 
             case ConsoleKey.F:
                 if ((key.Modifiers & ConsoleModifiers.Control) != 0)
                 {
-                    NavigationHelper.PageDown(Columns[State.ActiveColumn], Console.WindowHeight - 3);
-                    UpdateHorizontalScroll();
-                    await RebuildRightSideAsync(State.ActiveColumn);
-                    if (State.Preview.IsVisible) StartPreviewLoad();
+                    NavigationHelper.PageDown(pane.Columns[pane.ActiveColumn], Console.WindowHeight - 3);
+                    UpdateHorizontalScroll(pane);
+                    await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                    if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 }
                 break;
 
             default:
                 if (key.KeyChar == '/' && key.Modifiers == ConsoleModifiers.None)
-                    EnterSearchMode();
+                    EnterSearchMode(pane);
                 else if (key.KeyChar == '\\' && key.Modifiers == ConsoleModifiers.None)
-                    await ShowContextMenuAsync();
+                    await ShowContextMenuAsync(pane);
                 break;
         }
     }
@@ -3542,13 +3545,14 @@ static class Program
     static string[] BuildFrame(int width, int height)
     {
         _framesBuilt++;
+        Pane pane = FocusedPane;
 
         // Clear the "missing entry" message as soon as the cursor actually moves
         // away from where the fallback landed it (every cursor move triggers a
         // redraw, so this check runs on the frame that follows the move).
         if (_missingEntryMessage != null)
         {
-            Column active = Columns[State.ActiveColumn];
+            Column active = pane.Columns[pane.ActiveColumn];
             if (!ReferenceEquals(active, _missingEntryColumn) || active.Selected != _missingEntrySelected)
                 _missingEntryMessage = null;
         }
@@ -3562,20 +3566,20 @@ static class Program
 
         // Show preview whenever it's visible and there's room — for files it occupies a reserved slot,
         // for directories it fills blank space left after columns run out (Finder-style).
-        bool showPreview = State.Preview.IsVisible && Console.WindowWidth >= ColumnWidth * 2;
+        bool showPreview = pane.Preview.IsVisible && Console.WindowWidth >= ColumnWidth * 2;
         // Only carve out a reserved column slot for files; directories fill blank space naturally.
-        bool filePreview = State.Preview.IsVisible && SelectedItemIsFileOrDrive();
+        bool filePreview = pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane);
 
         int displayX = 0;
         int drawnColumnsWidth = 0;
         int columnDrawLimit = filePreview ? width - ColumnWidth : width;
 
-        for (int i = State.HorizontalScroll;
-             i < Columns.Count && displayX + ColumnWidth <= columnDrawLimit;
+        for (int i = pane.HorizontalScroll;
+             i < pane.Columns.Count && displayX + ColumnWidth <= columnDrawLimit;
              i++)
         {
-            bool isFirstVisible = (i == State.HorizontalScroll);
-            DrawColumnToLines(lines, Columns[i], displayX, i == State.ActiveColumn, i < State.ActiveColumn, width, height, isFirstVisible);
+            bool isFirstVisible = (i == pane.HorizontalScroll);
+            DrawColumnToLines(lines, pane.Columns[i], displayX, i == pane.ActiveColumn, i < pane.ActiveColumn, width, height, isFirstVisible);
             displayX += ColumnWidth;
             drawnColumnsWidth += ColumnWidth;
         }
@@ -3585,13 +3589,13 @@ static class Program
         {
             int previewWidth = width - drawnColumnsWidth;
             PreviewContent content;
-            if (State.Preview.IsLoading || State.Preview.Content == null)
+            if (pane.Preview.IsLoading || pane.Preview.Content == null)
             {
                 content = new PreviewContent("Loading…", "", "", ["⠋"], true);
             }
             else
             {
-                content = State.Preview.Content;
+                content = pane.Preview.Content;
             }
 
             if (previewWidth >= ColumnWidth)
@@ -3605,32 +3609,32 @@ static class Program
         }
 
         // Full path line (above status)
-        string fullPath = GetCurrentFullPath();
+        string fullPath = GetCurrentFullPath(pane);
         fullPath = CharacterWidth.SmartTruncate(fullPath, width);
         frame[height - 2] = CharacterWidth.PadToWidth(fullPath, width);
 
         // Override status with preview-hidden hint only when terminal width is the limiting factor
-        if (State.Preview.IsVisible && SelectedItemIsFileOrDrive() && Console.WindowWidth < ColumnWidth * 2)
+        if (pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane) && Console.WindowWidth < ColumnWidth * 2)
         {
             _lastErrorMessage = "[preview hidden: narrow terminal]";
         }
 
         // Status line
-        if (State.Leap.Active)
+        if (pane.Leap.Active)
         {
-            string leapBar = SearchHelper.BuildLeapStatusBar(State.Leap, Columns, State.ActiveColumn, width);
+            string leapBar = SearchHelper.BuildLeapStatusBar(pane.Leap, pane.Columns, pane.ActiveColumn, width);
             frame[height - 1] = leapBar;
         }
-        else if (State.Search.Active)
+        else if (pane.Search.Active)
         {
             List<int> matchSnapshot;
             bool done;
             lock (_searchLock)
             {
-                matchSnapshot = new List<int>(State.Search.Matches);
-                done = State.Search.SearchDone;
+                matchSnapshot = new List<int>(pane.Search.Matches);
+                done = pane.Search.SearchDone;
             }
-            string searchBar = SearchHelper.BuildSearchStatusBar(State.Search, matchSnapshot, done, width);
+            string searchBar = SearchHelper.BuildSearchStatusBar(pane.Search, matchSnapshot, done, width);
             frame[height - 1] = searchBar; // already padded to width
         }
         else if (_lastErrorMessage != null)
@@ -3647,7 +3651,7 @@ static class Program
         }
         else
         {
-            string previewHint = State.Preview.IsVisible ? "Shift+V=Preview[on]" : "Shift+V=Preview[off]";
+            string previewHint = pane.Preview.IsVisible ? "Shift+V=Preview[on]" : "Shift+V=Preview[off]";
             string status;
             if (IsWindows())
                 status = $"Esc=Quit | Ctrl+Enter=Open | Shift+Enter/\\=Menu | {previewHint}";
@@ -3662,22 +3666,23 @@ static class Program
 
     static void DrawColumnToLines(Line[] lines, Column column, int displayX, bool active, bool isLeft, int frameWidth, int frameHeight, bool isFirstVisible)
     {
+        Pane pane = FocusedPane;
         int visibleHeight = frameHeight - 3;  // Reserve 3 rows: header + fullpath + status
 
         int entryCount = column.Entries.Count;
 
-        bool inLeap = active && State.Leap.Active;
-        List<int>? leapVisible = inLeap ? State.Leap.VisibleIndices : null;
+        bool inLeap = active && pane.Leap.Active;
+        List<int>? leapVisible = inLeap ? pane.Leap.VisibleIndices : null;
 
         // Auto-scroll: leap uses virtual scroll over visible indices; normal uses raw index
         if (inLeap && leapVisible != null)
         {
             int visPos = leapVisible.Count > 0 ? leapVisible.IndexOf(column.Selected) : 0;
             if (visPos < 0) visPos = 0;
-            int ls = State.Leap.ColumnScrollOffset;
+            int ls = pane.Leap.ColumnScrollOffset;
             if (visPos < ls) ls = visPos;
             if (visPos >= ls + visibleHeight) ls = visPos - visibleHeight + 1;
-            State.Leap.ColumnScrollOffset = Math.Max(0, ls);
+            pane.Leap.ColumnScrollOffset = Math.Max(0, ls);
         }
         else
         {
@@ -3718,17 +3723,17 @@ static class Program
         int startRow = 1;
         int scrollOffset = column.ScrollOffset;
 
-        bool inSearch = active && State.Search.Active;
+        bool inSearch = active && pane.Search.Active;
         HashSet<int> matchSet = new HashSet<int>();
         int currentMatchEntry = -1;
         if (inSearch)
         {
             lock (_searchLock)
             {
-                if (State.Search.Matches.Count > 0)
+                if (pane.Search.Matches.Count > 0)
                 {
-                    matchSet = new HashSet<int>(State.Search.Matches);
-                    currentMatchEntry = State.Search.Matches[State.Search.MatchIndex];
+                    matchSet = new HashSet<int>(pane.Search.Matches);
+                    currentMatchEntry = pane.Search.Matches[pane.Search.MatchIndex];
                 }
             }
         }
@@ -3736,7 +3741,7 @@ static class Program
         if (inLeap && leapVisible != null)
         {
             // Leap mode: render only visible (matching) entries; non-matching entries are hidden
-            int leapScroll = State.Leap.ColumnScrollOffset;
+            int leapScroll = pane.Leap.ColumnScrollOffset;
             for (int i = 0; i < visibleHeight; i++)
             {
                 int vi = leapScroll + i;
