@@ -1892,70 +1892,70 @@ static class Program
         return (System.IO.Path.Combine(c.Path, name), false);
     }
 
-    static void StartPreviewLoad(bool forceReload = false)
+    static void StartPreviewLoad(Pane pane, bool forceReload = false)
     {
-        if (!State.Preview.IsVisible) return;
+        if (!pane.Preview.IsVisible) return;
 
         // Empty-directory placeholder — show a clean message instead of trying to open a non-existent path
-        if (State.ActiveColumn >= 0 && State.ActiveColumn < Columns.Count)
+        if (pane.ActiveColumn >= 0 && pane.ActiveColumn < pane.Columns.Count)
         {
-            Column col = Columns[State.ActiveColumn];
+            Column col = pane.Columns[pane.ActiveColumn];
             if (col.Selected >= 0 && col.Selected < col.Entries.Count && col.Entries[col.Selected] == "<No file>")
             {
-                State.Preview.Cancel();
-                State.Preview.CurrentPath = null;
-                State.Preview.Content = new PreviewContent("No preview", "Empty folder", "", [], false);
-                State.Preview.IsLoading = false;
+                pane.Preview.Cancel();
+                pane.Preview.CurrentPath = null;
+                pane.Preview.Content = new PreviewContent("No preview", "Empty folder", "", [], false);
+                pane.Preview.IsLoading = false;
                 return;
             }
         }
 
         // Directory preview — show item count from the already-loaded right column
-        if (State.ActiveColumn >= 0 && State.ActiveColumn < Columns.Count)
+        if (pane.ActiveColumn >= 0 && pane.ActiveColumn < pane.Columns.Count)
         {
-            Column col = Columns[State.ActiveColumn];
+            Column col = pane.Columns[pane.ActiveColumn];
             if (col.Selected >= 0 && col.Selected < col.Entries.Count)
             {
                 string selName = col.Entries[col.Selected];
                 if (selName.EndsWith("/") && col.Path != "::DRIVES::")
                 {
                     string dirPath = System.IO.Path.Combine(col.Path, selName.TrimEnd('/'));
-                    if (!forceReload && State.Preview.CurrentPath == dirPath && State.Preview.Content != null)
+                    if (!forceReload && pane.Preview.CurrentPath == dirPath && pane.Preview.Content != null)
                         return;
                     string subtitle = "";
-                    int rcIdx = State.ActiveColumn + 1;
-                    if (rcIdx < Columns.Count)
+                    int rcIdx = pane.ActiveColumn + 1;
+                    if (rcIdx < pane.Columns.Count)
                     {
-                        Column rc = Columns[rcIdx];
+                        Column rc = pane.Columns[rcIdx];
                         if (!rc.IsLoading && rc.Entries.Count > 0)
                         {
                             int count = (rc.Entries.Count == 1 && rc.Entries[0] == "<No file>") ? 0 : rc.Entries.Count;
                             subtitle = count == 0 ? "Empty" : $"{count} item{(count == 1 ? "" : "s")}";
                         }
                     }
-                    State.Preview.Cancel();
-                    State.Preview.CurrentPath = dirPath;
-                    State.Preview.Content = new PreviewContent("Directory", subtitle, "", [], false);
-                    State.Preview.IsLoading = false;
+                    pane.Preview.Cancel();
+                    pane.Preview.CurrentPath = dirPath;
+                    pane.Preview.Content = new PreviewContent("Directory", subtitle, "", [], false);
+                    pane.Preview.IsLoading = false;
                     return;
                 }
             }
         }
 
-        var target = GetPreviewTarget();
+        var target = GetPreviewTarget(pane);
         if (target == null) return;
 
         string path = target.Value.Path;
         bool isDrive = target.Value.IsDrive;
 
         // Skip reload if already showing this path at current dimensions
-        if (!forceReload && State.Preview.CurrentPath == path && State.Preview.Content != null && !State.Preview.IsLoading)
+        if (!forceReload && pane.Preview.CurrentPath == path && pane.Preview.Content != null && !pane.Preview.IsLoading)
             return;
 
-        State.Preview.Cancel();
-        State.Preview.CurrentPath = path;
-        State.Preview.IsLoading = true;
-        State.Preview.Content = null;
+        pane.Preview.Cancel();
+        pane.Preview.CurrentPath = path;
+        pane.Preview.IsLoading = true;
+        pane.Preview.Content = null;
 
         // Read first 16 bytes for type detection
         byte[] magic = new byte[16];
@@ -1972,13 +1972,13 @@ static class Program
         FileType fileType = isDrive
             ? new FileType(FileCategory.Drive, "Drive")
             : FileTypeDetector.Detect(path, magic);
-        State.Preview.CurrentType = fileType;
+        pane.Preview.CurrentType = fileType;
 
         var cts = new CancellationTokenSource();
-        State.Preview.Cts = cts;
+        pane.Preview.Cts = cts;
         int termWidth = Console.WindowWidth;
         int drawnCols = 0;
-        for (int i = State.HorizontalScroll; i < Columns.Count && (drawnCols + 1) * ColumnWidth <= termWidth; i++)
+        for (int i = pane.HorizontalScroll; i < pane.Columns.Count && (drawnCols + 1) * ColumnWidth <= termWidth; i++)
             drawnCols++;
         int width = Math.Max(ColumnWidth, termWidth - drawnCols * ColumnWidth);
         int height = Console.WindowHeight;
@@ -1990,21 +1990,21 @@ static class Program
                 var content = await PreviewLoader.LoadAsync(path, isDrive, fileType, width, height, cts.Token);
                 if (!cts.Token.IsCancellationRequested)
                 {
-                    State.Preview.Content = content;
-                    State.Preview.IsLoading = false;
+                    pane.Preview.Content = content;
+                    pane.Preview.IsLoading = false;
                     _redrawGate.Request(); // signal main loop to redraw with the new content
                 }
             }
             catch (OperationCanceledException) { }
-            catch (Exception ex) { State.Preview.Content = new PreviewContent("Error", ex.Message, "", [], false); State.Preview.IsLoading = false; _redrawGate.Request(); }
+            catch (Exception ex) { pane.Preview.Content = new PreviewContent("Error", ex.Message, "", [], false); pane.Preview.IsLoading = false; _redrawGate.Request(); }
         }, cts.Token);
     }
 
-    static void CancelPreviewLoad()
+    static void CancelPreviewLoad(Pane pane)
     {
-        State.Preview.Cancel();
-        State.Preview.Content = null;
-        State.Preview.CurrentPath = null;
+        pane.Preview.Cancel();
+        pane.Preview.Content = null;
+        pane.Preview.CurrentPath = null;
     }
 
     static async Task HandleSpecialKeyAsync(ConsoleKeyInfo key)
