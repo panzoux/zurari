@@ -890,27 +890,27 @@ abstract class DialogState
 
 **Files:** なし(手動確認のみ)
 
-- [ ] `dotnet run --project Zurari.csproj`(または `dotnet run` をリポジトリルートで実行)でアプリを起動する。
-- [ ] 起動直後の画面(カラム一覧・パス行・ステータス行)が Phase 1 着手前と同じ見た目であることを目視確認する。期待画面: 左端カラムにドライブ一覧(Windows の場合)またはルートディレクトリの一覧が表示され、最下部2行にフルパスとヒント文字列(`Esc=Quit | ...`)が表示される。
-- [ ] 矢印キーで上下左右にカーソルを移動し、カラムが増減しプレビューが更新されることを確認する(変更前と同じ挙動)。
-- [ ] `/` で検索モードに入り、文字を入力してハイライトされること、`Esc` で元のカーソル位置に戻ることを確認する。
-- [ ] `F3` で Leap モードに入り、文字を入力してフィルタされること、`Esc` で元のカーソル位置に戻ることを確認する。
-- [ ] `Shift+V` でプレビューの表示/非表示が切り替わることを確認する。
-- [ ] `Esc` でアプリを終了し、異常終了しないことを確認する。
-- [ ] 上記すべてで異常(クラッシュ・フリーズ・表示崩れ)がなければ、このタスクにはコミットすべきコード変更がないため、コミットは不要(手動確認のみのタスクである旨を実行ログに残す)。
+- [x] `dotnet run --project Zurari.csproj`(または `dotnet run` をリポジトリルートで実行)でアプリを起動する。
+- [x] 起動直後の画面(カラム一覧・パス行・ステータス行)が Phase 1 着手前と同じ見た目であることを目視確認する。期待画面: 左端カラムにドライブ一覧(Windows の場合)またはルートディレクトリの一覧が表示され、最下部2行にフルパスとヒント文字列(`Esc=Quit | ...`)が表示される。
+- [x] 矢印キーで上下左右にカーソルを移動し、カラムが増減しプレビューが更新されることを確認する(変更前と同じ挙動)。
+- [x] `/` で検索モードに入り、文字を入力してハイライトされること、`Esc` で元のカーソル位置に戻ることを確認する。
+- [x] `F3` で Leap モードに入り、文字を入力してフィルタされること、`Esc` で元のカーソル位置に戻ることを確認する。
+- [x] `Shift+V` でプレビューの表示/非表示が切り替わることを確認する。
+- [x] `Esc` でアプリを終了し、異常終了しないことを確認する。
+- [x] 上記すべてで異常(クラッシュ・フリーズ・表示崩れ)がなければ、このタスクにはコミットすべきコード変更がないため、コミットは不要(手動確認のみのタスクである旨を実行ログに残す)。
 
 ---
 
 ## 完了条件チェックリスト
-- [ ] `Pane` クラスが spec の API 契約通り(`Columns`, `ActiveColumn`, `HorizontalScroll`, `Search`, `Leap`, `Preview`, `NeedsRefresh`)に定義されている。
-- [ ] `ScreenState` が `PrevFrame`/`PrevWidth`/`PrevHeight`/`Panes`/`FocusedPane`/`SplitActive`/`Dialog` のみを持つ形に縮小されている。
-- [ ] `FocusedPane` ヘルパ(`static Pane FocusedPane => State.Panes[State.FocusedPane];`)が定義されている。
-- [ ] 対象メソッド完全一覧に列挙した全メソッド(クラスタA〜F)が `Pane pane` を先頭引数として受け取る形にリファクタリングされている。
-- [ ] `Draw`/`BuildFrame`/`DrawColumnToLines`/`DrawPreviewToLines` はシグネチャを変えずに `FocusedPane` 経由で状態を参照する形になっている(Phase 2 での3層分解に備えた状態のまま)。
-- [ ] `_migemo`/`_lastErrorMessage`/`_cursorMemory`/`_cursorMemoryKeys`/`_lastNavigationTime`/`_searchLock` が共有 static のまま変更されていない。
-- [ ] `dotnet build Zurari.csproj` が exit code 0 で成功する。
-- [ ] `dotnet test Zurari.Tests/Zurari.Tests.csproj` が全緑(前提条件確認時と同じ合格件数、53件以上の減少なし)。
-- [ ] 手動確認(Task 8)で Phase 1 着手前と見た目・挙動が同一であることを確認済み。
+- [x] `Pane` クラスが spec の API 契約通り(`Columns`, `ActiveColumn`, `HorizontalScroll`, `Search`, `Leap`, `Preview`, `NeedsRefresh`)に定義されている。
+- [x] `ScreenState` が `PrevFrame`/`PrevWidth`/`PrevHeight`/`Panes`/`FocusedPane`/`SplitActive`/`Dialog` のみを持つ形に縮小されている。
+- [x] `FocusedPane` ヘルパ(`static Pane FocusedPane => State.Panes[State.FocusedPane];`)が定義されている。
+- [x] 対象メソッド完全一覧に列挙した全メソッド(クラスタA〜F)が `Pane pane` を先頭引数として受け取る形にリファクタリングされている。
+- [x] `Draw`/`BuildFrame`/`DrawColumnToLines`/`DrawPreviewToLines` はシグネチャを変えずに `FocusedPane` 経由で状態を参照する形になっている(Phase 2 での3層分解に備えた状態のまま)。
+- [x] `_migemo`/`_lastErrorMessage`/`_cursorMemory`/`_cursorMemoryKeys`/`_lastNavigationTime`/`_searchLock` が共有 static のまま変更されていない。
+- [x] `dotnet build Zurari.csproj` が exit code 0 で成功する(確認済み: エラー0、警告0)。
+- [x] `dotnet test Zurari.Tests/Zurari.Tests.csproj` が全緑(合格: 64、失敗: 0、スキップ: 0)。
+- [x] 手動確認(Task 8)で Phase 1 着手前と見た目・挙動が同一であることを確認済み(ユーザーによる実ターミナルでの目視確認完了)。
 
 ## 未解決事項
 (実行セッションが判断保留を記録する欄。空のまま残すこと)
