@@ -3566,8 +3566,15 @@ static class Program
 
         // --- Layer 1: pane-rect drawing ---
         // Single pane fixed for this phase (Panes.Count == 1, SplitActive == false).
-        // yOffset=0, height=height-2 (everything minus the 2 footer rows), focused=true fixed.
-        DrawPaneToLines(lines, pane, 0, height - 2, true, width);
+        // yOffset=0, focused=true fixed. DrawPaneToLines's `height` parameter conceptually
+        // represents "the pane's assigned rectangle height"; in this single-pane phase that
+        // rectangle still spans the full screen height, matching what the pre-refactor code
+        // implicitly passed as frameHeight to DrawColumnToLines/DrawPreviewToLines. Passing
+        // `height` here (not height-2) preserves the original visibleHeight = frameHeight - 3
+        // math exactly, keeping output byte-identical. A future phase that actually shrinks
+        // per-pane height for multi-pane layouts will need to also revisit the 3-row
+        // reservation math inside DrawColumnToLines/DrawPreviewToLines (out of scope here).
+        DrawPaneToLines(lines, pane, 0, height, true, width);
 
         // Render each line to string and pad to window width
         for (int i = 0; i < height - 2; i++)
