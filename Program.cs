@@ -1736,7 +1736,7 @@ static class Program
     const int MaxPathLength = 100;
     const int NavigationDebounceMs = 300;
 
-    static readonly ScreenState State = new ScreenState();
+    internal static readonly ScreenState State = new ScreenState();
     static Pane FocusedPane => State.Panes[State.FocusedPane];
     static DateTime _lastNavigationTime = DateTime.MinValue;
     static string? _lastErrorMessage = null;
@@ -3689,7 +3689,7 @@ static class Program
         _ = focused;
     }
 
-    static void DrawColumnToLines(Line[] lines, Column column, int displayX, bool active, bool isLeft, int frameWidth, int frameHeight, bool isFirstVisible, int yOffset)
+    internal static void DrawColumnToLines(Line[] lines, Column column, int displayX, bool active, bool isLeft, int frameWidth, int frameHeight, bool isFirstVisible, int yOffset)
     {
         Pane pane = FocusedPane;
         // frameHeight is the height of the rectangle assigned to this pane (not the whole screen);
@@ -3894,7 +3894,7 @@ static class Program
         }
     }
 
-    static void DrawPreviewToLines(Line[] lines, PreviewContent content, int startX, int previewWidth, int frameHeight, int yOffset)
+    internal static void DrawPreviewToLines(Line[] lines, PreviewContent content, int startX, int previewWidth, int frameHeight, int yOffset)
     {
         int visibleHeight = frameHeight - 3; // same as column body height
 
