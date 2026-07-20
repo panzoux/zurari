@@ -914,3 +914,9 @@ abstract class DialogState
 
 ## 未解決事項
 (実行セッションが判断保留を記録する欄。空のまま残すこと)
+
+- 計画作成時の想定 HEAD(928735a)よりも、実装開始時点の実際の HEAD が2コミット進んでいた(`f95f4a6`: RedrawGate 描画最適化、`d863453`: Leap 子ペイン再構築修正)。この計画のコードスニペットは「代表例」であり、本体は「変換規則(1〜11)」であるという前提に基づき、実コードに変換規則を機械的に適用して対応した。具体的な差分:
+  - 新規メソッド `AnyColumnLoading()` / `UiActivityInProgress()`(RedrawGate コミットで追加。`Columns`/`State.Preview`/`State.Search` を参照)をクラスタA(ナビゲーション、Task 2)に含めて `Pane` 引数化した。
+  - `MoveLeapCursorDown`/`MoveLeapCursorUp` は既に `...Async` 化されていたため、そのまま `MoveLeapCursorDownAsync(Pane pane)`/`MoveLeapCursorUpAsync(Pane pane)` とした。
+  - 新規 `RebuildRightSideOrValidateAsync()`(`d863453` で追加)も `Pane` 引数化した。
+- Task 8(手動での見た目同一確認)について: この環境(Windows / Git Bash / 非対話プロセス起動)ではフルスクリーン TUI アプリを自動化経由で起動すると `System.IO.IOException: ハンドルが無効です`(`ConsolePal.GetBufferInfo` / `get_WindowHeight` 由来、`Program.cs` の `CreateColumnAsync` → `RebuildRightSideAsync` 経由)がスローされ、自動確認ができない。これがリファクタによる回帰か、実コンソールが無い環境での既存の制約かは、リファクタ前コミット(`928735a`)の `Program.cs` に対して同じ非対話起動テストを行うことで切り分け可能。切り分け手順および人間による手動確認チェックリストは別途セッションに引き継ぐ。
