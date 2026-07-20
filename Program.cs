@@ -3564,43 +3564,10 @@ static class Program
         for (int i = 0; i < height; i++)
             lines[i] = new Line();
 
-        // Show preview whenever it's visible and there's room — for files it occupies a reserved slot,
-        // for directories it fills blank space left after columns run out (Finder-style).
-        bool showPreview = pane.Preview.IsVisible && Console.WindowWidth >= ColumnWidth * 2;
-        // Only carve out a reserved column slot for files; directories fill blank space naturally.
-        bool filePreview = pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane);
-
-        int displayX = 0;
-        int drawnColumnsWidth = 0;
-        int columnDrawLimit = filePreview ? width - ColumnWidth : width;
-
-        for (int i = pane.HorizontalScroll;
-             i < pane.Columns.Count && displayX + ColumnWidth <= columnDrawLimit;
-             i++)
-        {
-            bool isFirstVisible = (i == pane.HorizontalScroll);
-            DrawColumnToLines(lines, pane.Columns[i], displayX, i == pane.ActiveColumn, i < pane.ActiveColumn, width, height, isFirstVisible);
-            displayX += ColumnWidth;
-            drawnColumnsWidth += ColumnWidth;
-        }
-
-        // Preview pane
-        if (showPreview)
-        {
-            int previewWidth = width - drawnColumnsWidth;
-            PreviewContent content;
-            if (pane.Preview.IsLoading || pane.Preview.Content == null)
-            {
-                content = new PreviewContent("Loading…", "", "", ["⠋"], true);
-            }
-            else
-            {
-                content = pane.Preview.Content;
-            }
-
-            if (previewWidth >= ColumnWidth)
-                DrawPreviewToLines(lines, content, drawnColumnsWidth, previewWidth, height);
-        }
+        // --- Layer 1: pane-rect drawing ---
+        // Single pane fixed for this phase (Panes.Count == 1, SplitActive == false).
+        // yOffset=0, height=height-2 (everything minus the 2 footer rows), focused=true fixed.
+        DrawPaneToLines(lines, pane, 0, height - 2, true, width);
 
         // Render each line to string and pad to window width
         for (int i = 0; i < height - 2; i++)
@@ -3608,6 +3575,7 @@ static class Program
             frame[i] = lines[i].Render(width);
         }
 
+        // --- Layer 2: shared footer ---
         // Full path line (above status)
         string fullPath = GetCurrentFullPath(pane);
         fullPath = CharacterWidth.SmartTruncate(fullPath, width);
@@ -3661,12 +3629,64 @@ static class Program
             frame[height - 1] = CharacterWidth.PadToWidth(status, width);
         }
 
+        // --- Layer 3: overlay (empty hook; DialogState-based rendering is a future phase) ---
+        DrawDialogOverlay(frame, width, height);
+
         return frame;
     }
 
-    static void DrawColumnToLines(Line[] lines, Column column, int displayX, bool active, bool isLeft, int frameWidth, int frameHeight, bool isFirstVisible)
+    static void DrawDialogOverlay(string[] frame, int width, int height)
+    {
+        // No-op for now — a later phase will implement:
+        // "if State.Dialog != null, overwrite a centered box in the relevant frame region."
+    }
+
+    static void DrawPaneToLines(Line[] lines, Pane pane, int yOffset, int height, bool focused, int width)
+    {
+        bool showPreview = pane.Preview.IsVisible && Console.WindowWidth >= ColumnWidth * 2;
+        bool filePreview = pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane);
+
+        int displayX = 0;
+        int drawnColumnsWidth = 0;
+        int columnDrawLimit = filePreview ? width - ColumnWidth : width;
+
+        for (int i = pane.HorizontalScroll;
+             i < pane.Columns.Count && displayX + ColumnWidth <= columnDrawLimit;
+             i++)
+        {
+            bool isFirstVisible = (i == pane.HorizontalScroll);
+            DrawColumnToLines(lines, pane.Columns[i], displayX, i == pane.ActiveColumn, i < pane.ActiveColumn, width, height, isFirstVisible, yOffset);
+            displayX += ColumnWidth;
+            drawnColumnsWidth += ColumnWidth;
+        }
+
+        if (showPreview)
+        {
+            int previewWidth = width - drawnColumnsWidth;
+            PreviewContent content;
+            if (pane.Preview.IsLoading || pane.Preview.Content == null)
+            {
+                content = new PreviewContent("Loading…", "", "", ["⠋"], true);
+            }
+            else
+            {
+                content = pane.Preview.Content;
+            }
+
+            if (previewWidth >= ColumnWidth)
+                DrawPreviewToLines(lines, content, drawnColumnsWidth, previewWidth, height, yOffset);
+        }
+
+        // focused is always true in this phase (dimmed-palette support is a later phase).
+        // Accepted as a parameter now so future phases don't need to change this call signature.
+        _ = focused;
+    }
+
+    static void DrawColumnToLines(Line[] lines, Column column, int displayX, bool active, bool isLeft, int frameWidth, int frameHeight, bool isFirstVisible, int yOffset)
     {
         Pane pane = FocusedPane;
+        // frameHeight is the height of the rectangle assigned to this pane (not the whole screen);
+        // subtract 3 rows (header + full-path row + status row) from that rectangle height.
         int visibleHeight = frameHeight - 3;  // Reserve 3 rows: header + fullpath + status
 
         int entryCount = column.Entries.Count;
@@ -3718,7 +3738,7 @@ static class Program
 
         header = CharacterWidth.SmartTruncate(header, contentSlot);
         int headerDisplayWidth = CharacterWidth.GetStringWidth(header);
-        lines[0].AddColumn(header, headerDisplayWidth, ColumnWidth);
+        lines[yOffset + 0].AddColumn(header, headerDisplayWidth, ColumnWidth);
 
         int startRow = 1;
         int scrollOffset = column.ScrollOffset;
@@ -3747,7 +3767,7 @@ static class Program
                 int vi = leapScroll + i;
                 if (vi >= leapVisible.Count)
                 {
-                    lines[startRow + i].AddColumn("", 0, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn("", 0, ColumnWidth);
                     continue;
                 }
                 int absIdx = leapVisible[vi];
@@ -3767,14 +3787,14 @@ static class Program
                     int displayTextWidth = CharacterWidth.GetStringWidth(displayText);
                     int paddingNeeded = Math.Max(0, contentSlot - displayTextWidth);
                     string fullLine = bgColor + textColor + displayText + new string(' ', paddingNeeded) + reset;
-                    lines[startRow + i].AddColumn(fullLine, displayTextWidth + paddingNeeded, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn(fullLine, displayTextWidth + paddingNeeded, ColumnWidth);
                 }
                 else
                 {
                     int displayWidth = 2 + CharacterWidth.GetStringWidth(entry);
                     if (isDirectory)
                         entry = AnsiColors.Colorize(entry, AnsiColors.Blue);
-                    lines[startRow + i].AddColumn(prefix + entry, displayWidth, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn(prefix + entry, displayWidth, ColumnWidth);
                 }
             }
         }
@@ -3785,7 +3805,7 @@ static class Program
             {
                 if (scrollOffset + i >= entryCount)
                 {
-                    lines[startRow + i].AddColumn("", 0, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn("", 0, ColumnWidth);
                     continue;
                 }
 
@@ -3827,7 +3847,7 @@ static class Program
                     string fullLine = bgColor + textColor + displayText + new string(' ', paddingNeeded) + reset;
                     int totalDisplayWidth = displayTextWidth + paddingNeeded;
 
-                    lines[startRow + i].AddColumn(fullLine, totalDisplayWidth, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn(fullLine, totalDisplayWidth, ColumnWidth);
                 }
                 else if (isSelected)
                 {
@@ -3846,14 +3866,14 @@ static class Program
                     string fullLine = bgColor + textColor + displayText + new string(' ', paddingNeeded) + reset;
                     int totalDisplayWidth = displayTextWidth + paddingNeeded;
 
-                    lines[startRow + i].AddColumn(fullLine, totalDisplayWidth, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn(fullLine, totalDisplayWidth, ColumnWidth);
                 }
                 else if (isOtherMatch)
                 {
                     // Other match: green foreground text on default background
                     int displayWidth = 2 + CharacterWidth.GetStringWidth(entry);
                     string coloredEntry = "\x1b[32m" + entry + "\x1b[0m";
-                    lines[startRow + i].AddColumn(prefix + coloredEntry, displayWidth, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn(prefix + coloredEntry, displayWidth, ColumnWidth);
                 }
                 else
                 {
@@ -3861,20 +3881,20 @@ static class Program
                     int displayWidth = 2 + CharacterWidth.GetStringWidth(entry);
                     if (isDirectory)
                         entry = AnsiColors.Colorize(entry, AnsiColors.Blue);
-                    lines[startRow + i].AddColumn(prefix + entry, displayWidth, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn(prefix + entry, displayWidth, ColumnWidth);
                 }
             }
         }
     }
 
-    static void DrawPreviewToLines(Line[] lines, PreviewContent content, int startX, int previewWidth, int frameHeight)
+    static void DrawPreviewToLines(Line[] lines, PreviewContent content, int startX, int previewWidth, int frameHeight, int yOffset)
     {
         int visibleHeight = frameHeight - 3; // same as column body height
 
         // Row 0: type label
         string headerLabel = CharacterWidth.SmartTruncate(content.TypeLabel, previewWidth - 1);
         int headerW = CharacterWidth.GetStringWidth(headerLabel);
-        lines[0].AddColumn(headerLabel, headerW, previewWidth);
+        lines[yOffset + 0].AddColumn(headerLabel, headerW, previewWidth);
 
         if (visibleHeight < 1) return;
 
@@ -3884,25 +3904,25 @@ static class Program
             string info = CharacterWidth.SmartTruncate(content.InfoLine, previewWidth - 1);
             int infoW = CharacterWidth.GetStringWidth(info);
             string infoColored = AnsiColors.Colorize(info, AnsiColors.Yellow);
-            lines[1].AddColumn(infoColored, infoW, previewWidth);
+            lines[yOffset + 1].AddColumn(infoColored, infoW, previewWidth);
         }
         else
-            lines[1].AddColumn("", 0, previewWidth);
+            lines[yOffset + 1].AddColumn("", 0, previewWidth);
 
         // Row 2: modified date
         if (!string.IsNullOrEmpty(content.Modified))
         {
             string mod = CharacterWidth.SmartTruncate(content.Modified, previewWidth - 1);
-            lines[2].AddColumn(mod, CharacterWidth.GetStringWidth(mod), previewWidth);
+            lines[yOffset + 2].AddColumn(mod, CharacterWidth.GetStringWidth(mod), previewWidth);
         }
         else
-            lines[2].AddColumn("", 0, previewWidth);
+            lines[yOffset + 2].AddColumn("", 0, previewWidth);
 
         // Row 3: divider
         if (visibleHeight >= 3)
         {
             string divider = new string('─', previewWidth - 1);
-            lines[3].AddColumn(divider, CharacterWidth.GetStringWidth(divider), previewWidth);
+            lines[yOffset + 3].AddColumn(divider, CharacterWidth.GetStringWidth(divider), previewWidth);
         }
 
         // Row 4 (optional): extension mismatch warning
@@ -3911,7 +3931,7 @@ static class Program
         {
             string warn = CharacterWidth.SmartTruncate(content.ExtMismatch, previewWidth - 1);
             string warnColored = AnsiColors.Colorize(warn, AnsiColors.Yellow);
-            lines[bodyStart].AddColumn(warnColored, CharacterWidth.GetStringWidth(warn), previewWidth);
+            lines[yOffset + bodyStart].AddColumn(warnColored, CharacterWidth.GetStringWidth(warn), previewWidth);
             bodyStart = 5;
         }
 
@@ -3923,11 +3943,11 @@ static class Program
             {
                 int row = bodyStart + i;
                 if (row >= visibleHeight + 1) break;
-                lines[row].AddColumn(content.PixelLines[i], content.PixelWidth, previewWidth);
+                lines[yOffset + row].AddColumn(content.PixelLines[i], content.PixelWidth, previewWidth);
             }
             int lastPixelRow = bodyStart + Math.Min(content.PixelLines.Length, visibleHeight - bodyStart + 1);
             for (int i = lastPixelRow; i < visibleHeight + 1; i++)
-                lines[i].AddColumn("", 0, previewWidth);
+                lines[yOffset + i].AddColumn("", 0, previewWidth);
         }
         else
         {
@@ -3937,11 +3957,11 @@ static class Program
                 if (row >= visibleHeight + 1) break;
                 string bodyLine = CharacterWidth.SmartTruncate(content.BodyLines[i], previewWidth - 1);
                 int bodyW = CharacterWidth.GetStringWidth(bodyLine);
-                lines[row].AddColumn(bodyLine, bodyW, previewWidth);
+                lines[yOffset + row].AddColumn(bodyLine, bodyW, previewWidth);
             }
             int lastBodyRow = bodyStart + Math.Min(content.BodyLines.Length, visibleHeight - bodyStart + 1);
             for (int i = lastBodyRow; i < visibleHeight + 1; i++)
-                lines[i].AddColumn("", 0, previewWidth);
+                lines[yOffset + i].AddColumn("", 0, previewWidth);
         }
     }
 
