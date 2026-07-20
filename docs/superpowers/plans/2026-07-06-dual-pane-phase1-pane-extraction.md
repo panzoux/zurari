@@ -919,4 +919,7 @@ abstract class DialogState
   - 新規メソッド `AnyColumnLoading()` / `UiActivityInProgress()`(RedrawGate コミットで追加。`Columns`/`State.Preview`/`State.Search` を参照)をクラスタA(ナビゲーション、Task 2)に含めて `Pane` 引数化した。
   - `MoveLeapCursorDown`/`MoveLeapCursorUp` は既に `...Async` 化されていたため、そのまま `MoveLeapCursorDownAsync(Pane pane)`/`MoveLeapCursorUpAsync(Pane pane)` とした。
   - 新規 `RebuildRightSideOrValidateAsync()`(`d863453` で追加)も `Pane` 引数化した。
-- Task 8(手動での見た目同一確認)について: この環境(Windows / Git Bash / 非対話プロセス起動)ではフルスクリーン TUI アプリを自動化経由で起動すると `System.IO.IOException: ハンドルが無効です`(`ConsolePal.GetBufferInfo` / `get_WindowHeight` 由来、`Program.cs` の `CreateColumnAsync` → `RebuildRightSideAsync` 経由)がスローされ、自動確認ができない。これがリファクタによる回帰か、実コンソールが無い環境での既存の制約かは、リファクタ前コミット(`928735a`)の `Program.cs` に対して同じ非対話起動テストを行うことで切り分け可能。切り分け手順および人間による手動確認チェックリストは別途セッションに引き継ぐ。
+- Task 8(手動での見た目同一確認)について: この環境(Windows / Git Bash / 非対話プロセス起動)ではフルスクリーン TUI アプリを自動化経由で起動すると `System.IO.IOException: ハンドルが無効です`(`ConsolePal.GetBufferInfo` / `get_WindowHeight` 由来、`Program.cs` の `CreateColumnAsync` → `RebuildRightSideAsync` 経由)がスローされ、自動確認ができない。
+  - **切り分け実施済み**: リファクタ前コミット(`928735a`)の `Program.cs` を一時的に `git checkout 928735a -- Program.cs` で復元し、同じ非対話起動テスト(`ProcessStartInfo` + `RedirectStandardError`、`UseShellExecute=$false`)を実行したところ、全く同一のスタックトレース(`CreateColumnAsync` → `RebuildRightSideAsync` → `Main`)で同じ `System.IO.IOException` が発生した。
+  - **結論**: これは Pane 抽出リファクタによる回帰ではなく、「実コンソールが無い非対話起動では常に発生する」既存の制約である。テスト後、`git checkout HEAD -- Program.cs` で復元し、`dotnet build Zurari.csproj` が成功することを確認済み(0エラー)。
+  - Task 8 の手動確認(矢印キー操作、`/` 検索、`F3` Leap、`Shift+V` プレビュー切替、`Esc` 終了)は、実際のターミナル(Windows Terminal / cmd.exe / 通常の PowerShell ウィンドウ)上でユーザー自身が実行する必要がある。下記チェックリストを参照。
