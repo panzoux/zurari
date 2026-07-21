@@ -632,6 +632,29 @@ static class TextInputBuffer
     }
 }
 
+static class ListFilter
+{
+    public static List<string> Recompute(List<string> allItems, string query, bool regexMode, MigemoProvider? migemo)
+    {
+        if (string.IsNullOrEmpty(query))
+            return new List<string>(allItems);
+
+        var result = new List<string>();
+        foreach (string item in allItems)
+        {
+            if (SearchHelper.MatchesSearchQuery(item, query, regexMode, migemo))
+                result.Add(item);
+        }
+        return result;
+    }
+
+    public static int ClampSelected(int selected, int filteredCount)
+    {
+        if (filteredCount <= 0) return 0;
+        return Math.Clamp(selected, 0, filteredCount - 1);
+    }
+}
+
 sealed class SearchState
 {
     public bool Active;
