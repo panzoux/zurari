@@ -1927,7 +1927,7 @@ static class Program
                 if (!Console.KeyAvailable)
                 {
                     Pane pane = FocusedPane;
-                    if (pane.Leap.Active
+                    if (State.Dialog == null && pane.Leap.Active
                         && pane.Leap.NeedsRecompute
                         && (DateTime.UtcNow - pane.Leap.LastInputTime).TotalMilliseconds >= NavigationDebounceMs)
                     {
@@ -1937,7 +1937,7 @@ static class Program
                         await RebuildRightSideAsync(pane, pane.ActiveColumn);
                         _redrawGate.Request();
                     }
-                    else if (pane.Search.Active
+                    else if (State.Dialog == null && pane.Search.Active
                         && pane.Search.NeedsRecompute
                         && (DateTime.UtcNow - pane.Search.LastInputTime).TotalMilliseconds >= 300)
                     {
@@ -1955,6 +1955,12 @@ static class Program
                 _redrawGate.Request(); // any key → state may change → redraw next loop pass
 
                 Pane focusedPane = FocusedPane;
+
+                if (State.Dialog != null)
+                {
+                    await HandleDialogKeyAsync(focusedPane, key);
+                    continue;
+                }
 
                 if (focusedPane.Leap.Active)
                 {
