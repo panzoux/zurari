@@ -1290,22 +1290,25 @@ Task 9 で追加した `F9`/`F10`/`F11` は Task 10 の手動確認専用であ�
 
 ## 完了条件チェックリスト
 
-- [ ] `DialogState`/`ConfirmDialogState`/`TextInputDialogState`/`ListSelectDialogState` が `Program.cs` に実装され、`ScreenState.Dialog` に保持される。
-- [ ] `ShowConfirm(string, string, Action<bool?>)` / `ShowTextInput(string, string, Action<string?>)` / `ShowListSelect(string, IReadOnlyList<string>, Action<string?>)` が spec のシグネチャ通りに実装され、呼び出すと即座に返り `State.Dialog` がセットされる。
-- [ ] `HandleDialogKeyAsync` が3種のダイアログそれぞれの確定/キャンセル/編集キーを処理し、`Main` のメインループが「`State.Dialog != null` → `HandleDialogKeyAsync`」を最優先に呼ぶ形に統合されている。
-- [ ] ダイアログが開いている間、フォーカスペインの Leap/Search がアクティブであっても入力が届かない(ダイアログ最優先)。
-- [ ] `CalcDialogRect` が純関数として実装され、`DialogLayoutTests.cs` の全テストが Passed。
-- [ ] `TextInputBuffer`(挿入/BS/Del/←→/Home/End/CJK表示幅計算)が純関数として実装され、`TextInputBufferTests.cs` の全テストが Passed。
-- [ ] `ListFilter.Recompute`/`ClampSelected` が `SearchHelper.MatchesSearchQuery` を再利用する形で実装され、`ListFilterTests.cs` の全テストが Passed。
-- [ ] テキスト入力ダイアログの文字受け取りが `HandleSearchKeyAsync` と同一の判定(`!char.IsControl(key.KeyChar)`)を使っている。
-- [ ] リスト選択ダイアログの絞り込みが `SearchHelper.MatchesSearchQuery(entry, query, regexMode: false, _migemo)` を使い、キー入力ごとに全件再評価している。
-- [ ] ダイアログの中央ボックス描画(`ComposeDialogIntoFrame`)が `CharacterWidth.GetStringWidth`/`SmartTruncate`/`PadToWidth` を使い CJK 幅を正しく扱う。
-- [ ] `dotnet build Zurari.csproj` が exit 0。
-- [ ] `dotnet test Zurari.Tests/Zurari.Tests.csproj` が全緑(既存テスト + 新規3ファイル)。
-- [ ] 3種のダイアログが実機で単独に開閉・確定・キャンセルできることを手動確認済み(Task 10)。
-- [ ] 日本語 IME 入力を含むテキスト入力ダイアログが実機で文字化けなく動作することを確認済み(Task 10.4)。既知の `Console.ReadKey` IME 制約がある場合、検索モードと同一の挙動であることを比較確認済み。
-- [ ] Task 9 で追加した `F9`/`F10`/`F11` の一時デバッグホットキーが Task 11 で削除され、`grep -n "TEMP DEBUG" Program.cs` が0件であること。
+- [x] `DialogState`/`ConfirmDialogState`/`TextInputDialogState`/`ListSelectDialogState` が `Program.cs` に実装され、`ScreenState.Dialog` に保持される。
+- [x] `ShowConfirm(string, string, Action<bool?>)` / `ShowTextInput(string, string, Action<string?>)` / `ShowListSelect(string, IReadOnlyList<string>, Action<string?>)` が spec のシグネチャ通りに実装され、呼び出すと即座に返り `State.Dialog` がセットされる。
+- [x] `HandleDialogKeyAsync` が3種のダイアログそれぞれの確定/キャンセル/編集キーを処理し、`Main` のメインループが「`State.Dialog != null` → `HandleDialogKeyAsync`」を最優先に呼ぶ形に統合されている。
+- [x] ダイアログが開いている間、フォーカスペインの Leap/Search がアクティブであっても入力が届かない(ダイアログ最優先)。実機確認済み(Task 10.6: F9 でダイアログを開いた状態で F3 を押しても Leap に入らないことを確認)。
+- [x] `CalcDialogRect` が純関数として実装され、`DialogLayoutTests.cs` の全テストが Passed。
+- [x] `TextInputBuffer`(挿入/BS/Del/←→/Home/End/CJK表示幅計算)が純関数として実装され、`TextInputBufferTests.cs` の全テストが Passed。
+- [x] `ListFilter.Recompute`/`ClampSelected` が `SearchHelper.MatchesSearchQuery` を再利用する形で実装され、`ListFilterTests.cs` の全テストが Passed。
+- [x] テキスト入力ダイアログの文字受け取りが `HandleSearchKeyAsync` と同一の判定(`!char.IsControl(key.KeyChar)`)を使っている。
+- [x] リスト選択ダイアログの絞り込みが `SearchHelper.MatchesSearchQuery(entry, query, regexMode: false, _migemo)` を使い、キー入力ごとに全件再評価している。
+- [x] ダイアログの中央ボックス描画(`ComposeDialogIntoFrame`)が `CharacterWidth.GetStringWidth`/`SmartTruncate`/`PadToWidth` を使い CJK 幅を正しく扱う。
+- [x] `dotnet build Zurari.csproj` が exit 0。
+- [x] `dotnet test Zurari.Tests/Zurari.Tests.csproj` が全緑(既存テスト + 新規3ファイル。実績: 101件、内訳は既存69件 + DialogLayoutTests 6件 + TextInputBufferTests 18件 + ListFilterTests 8件)。
+- [x] 3種のダイアログが実機で単独に開閉・確定・キャンセルできることを手動確認済み(Task 10)。ユーザーによる実機確認で F9(確認)/F10(テキスト入力)/F11(リスト選択)いずれも開閉・確定・キャンセル・カーソル移動・絞り込みが正常動作。
+- [x] 日本語 IME 入力を含むテキスト入力ダイアログが実機で文字化けなく動作することを確認済み(Task 10.4)。ユーザーが実機で日本語IME入力(変換・確定・Backspaceでの1文字削除)を確認し、文字化けなしと報告。
+- [x] Task 9 で追加した `F9`/`F10`/`F11` の一時デバッグホットキーが Task 11 で削除され、`grep -n "TEMP DEBUG" Program.cs` が0件であること。
 
 ## 未解決事項
 
-(実行セッションが判断保留を記録する欄。空のまま残すこと)
+- **worktree のベースブランチずれ(実行セッションが自己解決)**: `EnterWorktree` ツールは既定で `origin/<default-branch>` を起点に新規ブランチを作成するが、本リポジトリの `origin/main` は Phase 2 完了コミット群(`c9743ee`〜`e4233b4`、`DrawPaneToLines` 3層分割を含む)が未 push のまま古い状態だった。そのため作成直後の worktree には前提条件(`DrawPaneToLines`/`DrawDialogOverlay` フック等)が欠落していた。着手前に `git log --oneline main..HEAD` で差分がないことを確認したうえで `git reset --hard main`(ローカル `main`)を実行し、正しい前提の上で作業を開始した。ユーザー判断が必要な事項ではなく、実行セッションが検出・解決した実装上の前提ズレとして記録する。今後同種のセッションを始める際は、`origin/<default-branch>` が最新かどうかを事前に確認するとよい。
+- **`TextInputBufferTests.Backspace_AtMiddle_RemovesCharBeforeCursor` の期待値誤り(実行セッションが自己解決)**: 計画書记載のテストは `TextInputBuffer.Backspace("漢字test", 2)` の結果を `"字test"` と期待していたが、同じく計画書に記載された参照実装(`buffer.Remove(pos - 1, 1)`)は cursorPos=2 の直前の文字(index=1 の `'字'`)を除去するため `"漢test"` が正しい。これは `MoveLeft`/`Insert` など他の全テストと整合する「ギャップ型カーソル」意味論とも一致する。計画の Task 2.4 にある「テストとコードのどちらが矛盾しているか算出式と突き合わせて判断する」という方針を Task 3 にも準用し、期待値を `"漢test"` に修正した(実装は計画通りのまま変更なし)。
+- **Task 5/6 のコード挿入位置(実行セッションが自己解決)**: 計画は `ShowConfirm`/`ShowTextInput`/`ShowListSelect` 等の挿入位置を「`ListFilter`(トップレベル static クラス)の直後」としていたが、これらは `State`(`Program` クラスのメンバ、`internal static readonly ScreenState State`)を無出所参照で使うため、`ListFilter` と同じトップレベルスコープには置けない(`State` が解決できずコンパイルエラーになる)。実際には `Program` クラス内、`HandleSearchKeyAsync` の直前(Task 6 の挿入位置と同じ場所)にまとめて配置した。処理内容・シグネチャは計画のコードそのまま。
+- **`OverwriteFrameRow` の ANSI エスケープ未対応バグ(実行セッション後、ユーザーの実機確認で発覚・修正)**: Task 10 の手動確認で、ダイアログボックスがディレクトリ一覧(青色 ANSI 装飾つき)に重なる行で、罫線が青く着色される・列がズレる・余分な `|` が出るなどの表示崩れが報告された。原因は `CharacterWidth.GetCharWidth('\x1b')` が1を返すため、`OverwriteFrameRow` の1文字ずつのセル分割ロジックが ANSI エスケープシーケンスの各バイトを表示幅1の可視文字として数えてしまい、桁計算がズレたうえ置換範囲がエスケープシーケンスの途中で切れて色コードの対応が壊れることだった(`FitRowToWidth` は元々ダイアログ自身のコンテンツ側の ANSI 除去には対応していたが、上書き先である `frame[y]` 側の ANSI は未対応だった)。1回目の修正では対象行全体を `StripAnsiForWidth` でプレーン化する簡易対応を行ったが、ダイアログが重なる行全体の色装飾(ボックス外側の部分も含む)が失われる副作用があり、ユーザーに確認したところ「ボックス外側の色は保持してほしい」との回答だったため、2回目の修正でエスケープシーケンスを直後の可視文字に付随させたセル単位で走査し、置換範囲外の元の装飾を保持しつつ置換範囲の前後に明示的なリセット(`\x1b[0m`)を挿入する実装に置き換えた(コミット `1d986d4` → `3059fb4`)。ユーザーの実機再確認で色保持・罫線・カーソル位置とも正常動作を確認済み。計画書には記載のなかった追加修正のため、ここに記録する。
