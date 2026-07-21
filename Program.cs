@@ -4500,7 +4500,12 @@ static class Program
     {
         if (y < 0 || y >= frameHeight) return;
 
-        string baseLine = frame[y];
+        // 対象行(ディレクトリ色分けなどでANSIエスケープを含みうる)をセル単位で
+        // 走査する前にプレーン化する。ANSIバイトを表示幅1の通常文字として数えると
+        // 桁計算がエスケープシーケンスの長さ分ズレ、置換範囲がエスケープシーケンスの
+        // 途中で切れて色コードの対応が崩れる(境界線が着色されて見える等の原因になる)。
+        // 切り詰め時の扱いは FitRowToWidth と同水準の割り切り(装飾を落として正確さを優先)。
+        string baseLine = StripAnsiForWidth(frame[y]);
         var cells = new List<string>();
         var widths = new List<int>();
         foreach (char c in baseLine)
@@ -4527,7 +4532,7 @@ static class Program
             if (startCol[i] >= x && startIdx < 0) startIdx = i;
             if (startCol[i] < x + displayWidth) endIdx = i + 1;
         }
-        if (startIdx < 0) { frame[y] = baseLine; return; }
+        if (startIdx < 0) return; // 置換範囲が見つからない場合は元の行(frame[y])に手を加えない
         if (endIdx < startIdx) endIdx = startIdx;
         endIdx = Math.Min(endIdx, cells.Count);
 
