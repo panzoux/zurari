@@ -539,6 +539,39 @@ sealed class ListSelectDialogState : DialogState
     public Action<string?> OnResult = _ => { }; // 確定項目の文字列 or null
 }
 
+readonly record struct DialogRect(int X, int Y, int Width, int Height);
+
+static class DialogLayout
+{
+    const int MarginEachSide = 1; // 画面端からの最小余白(片側)
+    const int MinContentWidth = 2;
+    const int MinContentHeight = 1;
+
+    public static DialogRect CalcDialogRect(int contentWidth, int contentHeight, int screenW, int screenH)
+    {
+        int cw = Math.Max(contentWidth, MinContentWidth);
+        int ch = Math.Max(contentHeight, MinContentHeight);
+
+        int outerWidth = cw + 2;   // 左右の枠線1文字ずつ
+        int outerHeight = ch + 2;  // 上下の枠線1文字ずつ
+
+        int maxWidth = Math.Max(4, screenW - MarginEachSide * 2);
+        int maxHeight = Math.Max(3, screenH - MarginEachSide * 2);
+
+        outerWidth = Math.Min(outerWidth, maxWidth);
+        outerHeight = Math.Min(outerHeight, maxHeight);
+
+        int x = Math.Max(0, (screenW - outerWidth) / 2);
+        int y = Math.Max(0, (screenH - outerHeight) / 2);
+
+        // 画面外にはみ出さないようクランプ(screenW/screenH が極小な場合の保険)
+        if (x + outerWidth > screenW) x = Math.Max(0, screenW - outerWidth);
+        if (y + outerHeight > screenH) y = Math.Max(0, screenH - outerHeight);
+
+        return new DialogRect(x, y, outerWidth, outerHeight);
+    }
+}
+
 sealed class SearchState
 {
     public bool Active;
