@@ -4008,8 +4008,8 @@ static class Program
 
     static void DrawDialogOverlay(string[] frame, int width, int height)
     {
-        // No-op for now — a later phase will implement:
-        // "if State.Dialog != null, overwrite a centered box in the relevant frame region."
+        if (State.Dialog == null) return;
+        ComposeDialogIntoFrame(frame, State.Dialog, width, height);
     }
 
     static void DrawPaneToLines(Line[] lines, Pane pane, int yOffset, int height, bool focused, int width)
@@ -4336,6 +4336,196 @@ static class Program
         }
     }
 
+    static string BuildTitledTopBorder(string title, int innerWidth)
+    {
+        string label = string.IsNullOrEmpty(title) ? "" : $"┤ {title} ├";
+        int labelWidth = CharacterWidth.GetStringWidth(label);
+        if (labelWidth > innerWidth)
+        {
+            label = "";
+            labelWidth = 0;
+        }
+        int leftDashes = Math.Max(1, (innerWidth - labelWidth) / 2);
+        int rightDashes = Math.Max(1, innerWidth - labelWidth - leftDashes);
+        return "┌" + new string('─', leftDashes) + label + new string('─', rightDashes) + "┐";
+    }
+
+    // ダイアログ種別ごとの内容行を組み立てる。カーソル位置は反転スペース(ANSI SGR 7)を
+    // テキスト中に挿入することで表現する(コンソールカーソル自体は非表示のため)。
+    static List<string> BuildDialogContentLines(DialogState dialog)
+    {
+        switch (dialog)
+        {
+            case ConfirmDialogState confirm:
+                return new List<string>
+                {
+                    confirm.Message,
+                    "",
+                    "[Y]es  [N]o  [Esc]キャンセル",
+                };
+
+            case TextInputDialogState textInput:
+            {
+                string beforeCursor = textInput.Buffer.Substring(0, textInput.CursorPos);
+                string atAndAfterCursor = textInput.Buffer.Substring(textInput.CursorPos);
+                string displayLine = beforeCursor + "\x1b[7m \x1b[0m" + atAndAfterCursor;
+                return new List<string>
+                {
+                    displayLine,
+                    "",
+                    "[Enter]確定  [Esc]キャンセル",
+                };
+            }
+
+            case ListSelectDialogState listSelect:
+            {
+                var lines = new List<string>
+                {
+                    "/" + listSelect.FilterQuery + "\x1b[7m \x1b[0m",
+                    "",
+                };
+
+                if (listSelect.FilteredItems.Count == 0)
+                {
+                    lines.Add("(該当なし)");
+                }
+                else
+                {
+                    const int maxVisibleRows = 12;
+                    int total = listSelect.FilteredItems.Count;
+                    int visibleRows = Math.Min(maxVisibleRows, total);
+
+                    int scrollStart = 0;
+                    if (listSelect.Selected >= visibleRows)
+                        scrollStart = listSelect.Selected - visibleRows + 1;
+                    scrollStart = Math.Min(scrollStart, Math.Max(0, total - visibleRows));
+
+                    for (int i = 0; i < visibleRows; i++)
+                    {
+                        int idx = scrollStart + i;
+                        if (idx >= total) break;
+                        string prefix = idx == listSelect.Selected ? "> " : "  ";
+                        string itemText = prefix + listSelect.FilteredItems[idx];
+                        if (idx == listSelect.Selected)
+                            itemText = "\x1b[7m" + itemText + "\x1b[0m";
+                        lines.Add(itemText);
+                    }
+                }
+
+                lines.Add("");
+                lines.Add("[↑↓]選択  [Enter]確定  [Esc]キャンセル");
+                return lines;
+            }
+
+            default:
+                return new List<string> { "" };
+        }
+    }
+
+    static void ComposeDialogIntoFrame(string[] frame, DialogState dialog, int width, int height)
+    {
+        List<string> contentLines = BuildDialogContentLines(dialog);
+        int contentWidth = 0;
+        foreach (string l in contentLines)
+            contentWidth = Math.Max(contentWidth, CharacterWidth.GetStringWidth(StripAnsiForWidth(l)));
+
+        // タイトルもコンテンツ幅の下限に含める("┤ タイトル ├" 分の余白を確保)
+        int titleWidth = CharacterWidth.GetStringWidth(dialog.Title) + 4;
+        contentWidth = Math.Max(contentWidth, titleWidth);
+
+        DialogRect rect = DialogLayout.CalcDialogRect(contentWidth, contentLines.Count, width, height);
+        int innerWidth = rect.Width - 2;
+        int innerHeight = rect.Height - 2;
+
+        string topBorder = BuildTitledTopBorder(dialog.Title, innerWidth);
+        OverwriteFrameRow(frame, rect.Y, rect.X, topBorder, width, height);
+
+        for (int i = 0; i < innerHeight; i++)
+        {
+            string rowText = i < contentLines.Count ? contentLines[i] : "";
+            string rowText2 = FitRowToWidth(rowText, innerWidth);
+            string row = "│" + rowText2 + "│";
+            OverwriteFrameRow(frame, rect.Y + 1 + i, rect.X, row, width, height);
+        }
+
+        string bottomBorder = "└" + new string('─', innerWidth) + "┘";
+        OverwriteFrameRow(frame, rect.Y + rect.Height - 1, rect.X, bottomBorder, width, height);
+    }
+
+    // ANSI付きの行を innerWidth ちょうどの表示幅に整形する。切り詰めが必要な行は
+    // ANSI装飾を落としてプレーンテキストで切り詰め・パディングする(既存のステータスバー実装と
+    // 同水準の割り切り。補足はTask 8.1参照)。
+    static string FitRowToWidth(string rowText, int innerWidth)
+    {
+        string plain = StripAnsiForWidth(rowText);
+        int plainWidth = CharacterWidth.GetStringWidth(plain);
+        if (plainWidth <= innerWidth && plain.Length == rowText.Length)
+        {
+            // ANSIを含まない、かつ幅に収まる行はそのままパディングして返す。
+            return rowText + new string(' ', innerWidth - plainWidth);
+        }
+        string truncated = CharacterWidth.SmartTruncate(plain, innerWidth);
+        return CharacterWidth.PadToWidth(truncated, innerWidth);
+    }
+
+    // frame[y] の表示列 x から displayWidth 分を content で上書きする。
+    // CJK混在時、文字インデックスと表示列インデックスが一致しないため、
+    // 表示幅ベースで文字単位に分解してから置換区間を決定する。
+    static void OverwriteFrameRow(string[] frame, int y, int x, string content, int frameWidth, int frameHeight)
+    {
+        if (y < 0 || y >= frameHeight) return;
+
+        string baseLine = frame[y];
+        var cells = new List<string>();
+        var widths = new List<int>();
+        foreach (char c in baseLine)
+        {
+            cells.Add(c.ToString());
+            widths.Add(CharacterWidth.GetCharWidth(c));
+        }
+
+        var startCol = new int[cells.Count];
+        int col = 0;
+        for (int i = 0; i < cells.Count; i++)
+        {
+            startCol[i] = col;
+            col += widths[i];
+        }
+        int totalWidth = col;
+
+        int displayWidth = CharacterWidth.GetStringWidth(StripAnsiForWidth(content));
+        if (x < 0 || x >= totalWidth || displayWidth <= 0) return;
+
+        int startIdx = -1, endIdx = -1; // endIdx は exclusive
+        for (int i = 0; i < cells.Count; i++)
+        {
+            if (startCol[i] >= x && startIdx < 0) startIdx = i;
+            if (startCol[i] < x + displayWidth) endIdx = i + 1;
+        }
+        if (startIdx < 0) { frame[y] = baseLine; return; }
+        if (endIdx < startIdx) endIdx = startIdx;
+        endIdx = Math.Min(endIdx, cells.Count);
+
+        int removedWidth = 0;
+        for (int i = startIdx; i < endIdx; i++)
+            removedWidth += widths[i];
+
+        string replacement = content;
+        int replacementWidth = CharacterWidth.GetStringWidth(StripAnsiForWidth(replacement));
+        if (replacementWidth < removedWidth)
+            replacement += new string(' ', removedWidth - replacementWidth);
+
+        cells.RemoveRange(startIdx, endIdx - startIdx);
+        cells.Insert(startIdx, replacement);
+
+        frame[y] = string.Concat(cells);
+    }
+
+    // ANSI エスケープシーケンス(色・反転等)を取り除いた表示幅計算用のプレーン文字列を返す。
+    static string StripAnsiForWidth(string text)
+    {
+        return System.Text.RegularExpressions.Regex.Replace(text, "\x1b\\[[0-9;]*m", "");
+    }
 
     static void WriteLineAt(int x, int y, string text)
     {
