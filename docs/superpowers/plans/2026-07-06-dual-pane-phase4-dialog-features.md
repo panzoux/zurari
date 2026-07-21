@@ -958,35 +958,35 @@
 - Modify: `Program.cs`(必要な場合のみ、Task 3/4 の実装に漏れがあれば補完)
 - Test: `Zurari.Tests/OperationLogTests.cs`(既存ファイルに追記)
 
-- [ ] `OperationLogTests.cs` に、実際の削除・リネームフローが `OperationLog` に正しいエントリを残すことを検証する統合テストではなく、`OpLogEntry` のフィールド組み立てが Task 3/4 のコードと一致することを確認する軽量テストを追加する(`ExecuteDeleteAsync`/`ExecuteRenameAsync` はコンソール UI・ダイアログに依存するため直接呼び出すユニットテストは組まない。ログの構造自体は Task 1 のテストで担保済み)。このタスクは新規テストを追加せず、Task 1〜7 のテストがすべて緑であることの再確認のみで完了する。
+- [x] `OperationLogTests.cs` に、実際の削除・リネームフローが `OperationLog` に正しいエントリを残すことを検証する統合テストではなく、`OpLogEntry` のフィールド組み立てが Task 3/4 のコードと一致することを確認する軽量テストを追加する(`ExecuteDeleteAsync`/`ExecuteRenameAsync` はコンソール UI・ダイアログに依存するため直接呼び出すユニットテストは組まない。ログの構造自体は Task 1 のテストで担保済み)。このタスクは新規テストを追加せず、Task 1〜7 のテストがすべて緑であることの再確認のみで完了する。
 
   ```
   dotnet test Zurari.Tests/Zurari.Tests.csproj
   ```
-  期待: 既存テスト + `OperationLogTests`(5件)がすべて Passed。
+  期待: 既存テスト + `OperationLogTests`(5件)がすべて Passed。 → 実行結果: 106件 Passed, 0 Failed。
 
-- [ ] 手動確認(統合): 適当なテストディレクトリで次を順に行い、`%APPDATA%\zurari\operations.log` の末尾を確認する。
+- [ ] 手動確認(統合): 適当なテストディレクトリで次を順に行い、`%APPDATA%\zurari\operations.log` の末尾を確認する。**未実施(エージェントはコンソール TUI を対話操作できないため、ユーザーによる確認が必要)。**
   1. ファイルを1つ削除する(`d` → `Y`)。
   2. 別のファイルをリネームする(`r` → 新名 → `Enter`)。
   3. `%APPDATA%\zurari\operations.log` を開き、`DELETE`行と`RENAME`行がそれぞれ1行ずつ、タブ区切りでタイムスタンプ・`-`(JobId無し)・操作種別・`OK`・パスが記録されていることを確認する。
 
-- [ ] コミットする(このタスクで `Program.cs` に変更がなければコミット不要。テスト実行結果の確認のみで完了する場合はスキップしてよい)。
+- [x] コミットする(このタスクで `Program.cs` に変更がなければコミット不要。テスト実行結果の確認のみで完了する場合はスキップしてよい)。→ `Program.cs` の変更なし、コミット不要のためスキップ。計画ファイル自体の更新のみ別途コミット。
 
 ---
 
 ## 完了条件チェックリスト
 
-- [ ] `OpLogEntry` / `OperationLog`(メモリ1000件リング + ファイル追記 + 10MBローテート1世代)が実装され、`OperationLogTests.cs` の5テストが緑。
-- [ ] `RecycleBin.TrySend` が `SHFileOperationW` P/Invoke で実装され、Windows でごみ箱送りが実機動作する。非 Windows では `false` を返し直接削除にフォールバックする分岐が実装されている。
-- [ ] `d` / `Delete` キーで確認ダイアログ→ごみ箱送り(または直接削除フォールバック)→ `OperationLog` 記録→フォーカスペインの影響カラム(=アクティブカラム)再読込が動作する。ドライブ一覧・空カラムでは無効化される。
-- [ ] `r` キーでテキスト入力ダイアログ(初期値=現在名、ディレクトリは末尾 `/` を外した名前)→ `File.Move`/`Directory.Move` → `OperationLog` 記録→再読込→カーソルが新名に追従する。
-- [ ] `b` でブックマーク一覧からのジャンプ、`Shift+B` で現在ディレクトリの追加(重複は追加しない)が `%APPDATA%\zurari\bookmarks.txt`(UTF-8, 1行1パス)に対して動作する。
-- [ ] `h` でセッション内ヒストリ(上限100、重複は末尾へ)からのジャンプがリスト選択ダイアログ(新しい順)で動作する。
-- [ ] `JumpToPathAsync(Pane pane, string path)` が新設され、ブックマーク・ヒストリ双方から共通利用されている。存在しないパスは `_lastErrorMessage` にセットされジャンプは行われない。
-- [ ] `HandleSpecialKeyAsync` への `d`/`Delete`/`r`/`h`/`b`/`Shift+B` の配線が、既存の `default` 節・`case ConsoleKey.B:` の構造を壊さずに追加されている。
-- [ ] `dotnet build Zurari.csproj` が exit 0。
-- [ ] `dotnet test Zurari.Tests/Zurari.Tests.csproj` が全緑。
-- [ ] 削除・リネーム・ブックマーク・ヒストリジャンプの4機能が実機(Windows)で動作確認済み(日本語ファイル名・パスを含む)。
+- [x] `OpLogEntry` / `OperationLog`(メモリ1000件リング + ファイル追記 + 10MBローテート1世代)が実装され、`OperationLogTests.cs` の5テストが緑。(`dotnet test --filter OperationLogTests` で確認済み)
+- [x] `RecycleBin.TrySend` が `SHFileOperationW` P/Invoke で実装され、非 Windows では `false` を返し直接削除にフォールバックする分岐が実装されている。(コード実装・ビルド確認済み。**Windows実機でのごみ箱送り動作は未確認** — 下記参照)
+- [x] `d` / `Delete` キーで確認ダイアログ→ごみ箱送り(または直接削除フォールバック)→ `OperationLog` 記録→フォーカスペインの影響カラム(=アクティブカラム)再読込のコードが実装されている。ドライブ一覧・空カラムでは無効化される(`SelectedIsDeletable`)。(**実機での手動確認は未実施**)
+- [x] `r` キーでテキスト入力ダイアログ(初期値=現在名、ディレクトリは末尾 `/` を外した名前)→ `File.Move`/`Directory.Move` → `OperationLog` 記録→再読込→カーソルが新名に追従するコードが実装されている。(**実機での手動確認は未実施**)
+- [x] `b` でブックマーク一覧からのジャンプ、`Shift+B` で現在ディレクトリの追加(重複は追加しない)が `%APPDATA%\zurari\bookmarks.txt`(UTF-8, 1行1パス)に対して動作するコードが実装されている。(**実機での手動確認は未実施**)
+- [x] `h` でセッション内ヒストリ(上限100、重複は末尾へ)からのジャンプがリスト選択ダイアログ(新しい順)で動作するコードが実装されている。(**実機での手動確認は未実施**)
+- [x] `JumpToPathAsync(Pane pane, string path)` が新設され、ブックマーク・ヒストリ双方から共通利用されている。存在しないパスは `_lastErrorMessage` にセットされジャンプは行われない。
+- [x] `HandleSpecialKeyAsync` への `d`/`Delete`/`r`/`h`/`b`/`Shift+B` の配線が、既存の `default` 節・`case ConsoleKey.B:` の構造を壊さずに追加されている。
+- [x] `dotnet build Zurari.csproj` が exit 0。(全タスク完了時点で再確認済み)
+- [x] `dotnet test Zurari.Tests/Zurari.Tests.csproj` が全緑。(106件 Passed)
+- [ ] 削除・リネーム・ブックマーク・ヒストリジャンプの4機能が実機(Windows)で動作確認済み(日本語ファイル名・パスを含む)。**未実施 — エージェントは対話的なコンソール TUI へのキー入力・ごみ箱への実送出・視覚的なダイアログ位置確認を行えないため、ユーザーによる実機確認が必要。確認手順は各 Task の「手動確認」記述を参照。**
 
 ## 未解決事項
 
