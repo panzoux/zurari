@@ -2071,6 +2071,9 @@ static class Program
     static readonly List<string> _cursorMemoryKeys = new();
     const int CursorMemoryLimit = 1000;
 
+    static readonly List<string> _history = new();
+    const int HistoryLimit = 100;
+
     static async Task Main()
     {
         Console.OutputEncoding = Encoding.UTF8;
@@ -2474,6 +2477,8 @@ static class Program
                     RequestDeleteSelected(pane);
                 else if (key.KeyChar == 'r' && key.Modifiers == ConsoleModifiers.None)
                     RequestRenameSelected(pane);
+                else if (key.KeyChar == 'h' && key.Modifiers == ConsoleModifiers.None)
+                    RequestHistoryJump(pane);
                 break;
         }
     }
@@ -3092,6 +3097,10 @@ static class Program
         CancelPreviewLoad(pane);
         if (pane.Preview.IsVisible) StartPreviewLoad(pane);
         await RebuildRightSideAsync(pane, pane.ActiveColumn - 1);
+
+        string? enteredPath = GetSelectedDirectory(pane, pane.ActiveColumn - 1);
+        if (enteredPath != null)
+            RecordHistoryVisit(enteredPath);
     }
 
     static async Task OpenFileAsync(Pane pane)
@@ -3210,6 +3219,7 @@ static class Program
         pane.ActiveColumn--;
         UpdateHorizontalScroll(pane);
         if (pane.Preview.IsVisible) StartPreviewLoad(pane);
+        RecordHistoryVisit(pane.Columns[pane.ActiveColumn].Path);
     }
 
     static void SaveCursorMemory(Column col)
@@ -4104,6 +4114,128 @@ static class Program
 
         // Recalculate scroll now that the right-side column count is final.
         UpdateHorizontalScroll(pane);
+    }
+
+    static async Task JumpToPathAsync(Pane pane, string path)
+    {
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(path);
+        }
+        catch
+        {
+            _lastErrorMessage = $"無効なパス: {path}";
+            return;
+        }
+
+        if (!Directory.Exists(fullPath))
+        {
+            _lastErrorMessage = $"パスが見つかりません: {path}";
+            return;
+        }
+
+        // Cancel any in-flight loads on the existing column chain before discarding it.
+        foreach (Column existing in pane.Columns)
+            existing.ReadCts?.Cancel();
+
+        // Split the target path into segments, e.g. "C:\Users\me\docs" -> ["C:\", "Users", "me", "docs"].
+        var segments = new List<string>();
+        string root = Path.GetPathRoot(fullPath) ?? "";
+        string remainder = fullPath.Substring(root.Length);
+        foreach (string part in remainder.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            if (part.Length > 0) segments.Add(part);
+        }
+
+        pane.Columns.Clear();
+
+        string rootMarker = GetRootPath();
+        Column rootColumn = await CreateColumnAsync(rootMarker, CancellationToken.None);
+        if (rootColumn.LoadingTask != null) await rootColumn.LoadingTask;
+        pane.Columns.Add(rootColumn);
+
+        // Select the drive (Windows) or first segment inside the root column.
+        string accumulatedPath;
+        if (IsWindows())
+        {
+            string driveEntry = root.TrimEnd('\\') + "/";
+            int driveIndex = rootColumn.Entries.IndexOf(driveEntry);
+            if (driveIndex < 0)
+            {
+                _lastErrorMessage = $"パスが見つかりません: {path}";
+                return;
+            }
+            rootColumn.Selected = driveIndex;
+            accumulatedPath = root; // e.g. "C:\"
+        }
+        else
+        {
+            accumulatedPath = "/";
+        }
+
+        pane.ActiveColumn = 0;
+
+        foreach (string segment in segments)
+        {
+            Column current = pane.Columns[pane.ActiveColumn];
+            string entryName = segment + "/";
+            int idx = current.Entries.IndexOf(entryName);
+            if (idx < 0)
+            {
+                _lastErrorMessage = $"パスが見つかりません: {path}";
+                return;
+            }
+            current.Selected = idx;
+
+            accumulatedPath = Path.Combine(accumulatedPath, segment);
+            Column next = await CreateColumnAsync(accumulatedPath, CancellationToken.None);
+            if (next.LoadingTask != null) await next.LoadingTask;
+
+            while (pane.Columns.Count > pane.ActiveColumn + 1)
+                pane.Columns.RemoveAt(pane.Columns.Count - 1);
+
+            pane.Columns.Add(next);
+            pane.ActiveColumn++;
+        }
+
+        UpdateHorizontalScroll(pane);
+        _lastErrorMessage = null;
+        RecordHistoryVisit(fullPath);
+    }
+
+    static void RecordHistoryVisit(string fullPath)
+    {
+        int existingIndex = _history.FindIndex(p => string.Equals(p, fullPath, StringComparison.OrdinalIgnoreCase));
+        if (existingIndex >= 0)
+            _history.RemoveAt(existingIndex);
+
+        _history.Add(fullPath);
+
+        while (_history.Count > HistoryLimit)
+            _history.RemoveAt(0);
+    }
+
+    static void RequestHistoryJump(Pane pane)
+    {
+        if (_history.Count == 0)
+        {
+            _lastErrorMessage = "ヒストリはまだありません";
+            return;
+        }
+
+        // Newest-first for display.
+        var items = new List<string>(_history);
+        items.Reverse();
+
+        ShowListSelect(
+            "ヒストリ",
+            items,
+            async selected =>
+            {
+                if (selected == null) return;
+                await JumpToPathAsync(pane, selected);
+            });
     }
 
     static string? GetSelectedDirectory(Pane pane, int columnIndex)
