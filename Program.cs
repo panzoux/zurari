@@ -3411,6 +3411,61 @@ static class Program
         return segments.Count > 0 ? segments.ToArray() : new[] { filter };
     }
 
+    static void ShowConfirm(string title, string message, Action<bool?> onResult)
+    {
+        State.Dialog = new ConfirmDialogState
+        {
+            Title = title,
+            Message = message,
+            OnResult = onResult,
+        };
+    }
+
+    static void ShowTextInput(string title, string initialValue, Action<string?> onResult)
+    {
+        State.Dialog = new TextInputDialogState
+        {
+            Title = title,
+            Buffer = initialValue,
+            CursorPos = initialValue.Length,
+            OnResult = onResult,
+        };
+    }
+
+    static void ShowListSelect(string title, IReadOnlyList<string> items, Action<string?> onResult)
+    {
+        var allItems = new List<string>(items);
+        State.Dialog = new ListSelectDialogState
+        {
+            Title = title,
+            AllItems = allItems,
+            FilteredItems = new List<string>(allItems),
+            FilterQuery = "",
+            Selected = 0,
+            OnResult = onResult,
+        };
+    }
+
+    // 開いているダイアログを閉じ、結果コールバックを呼ぶ共通クローズ処理。
+    // 呼び出し元(HandleDialogKeyAsync)が確定/キャンセル時に呼ぶ。
+    static void CloseConfirmDialog(ConfirmDialogState dialog, bool? result)
+    {
+        State.Dialog = null;
+        dialog.OnResult(result);
+    }
+
+    static void CloseTextInputDialog(TextInputDialogState dialog, string? result)
+    {
+        State.Dialog = null;
+        dialog.OnResult(result);
+    }
+
+    static void CloseListSelectDialog(ListSelectDialogState dialog, string? result)
+    {
+        State.Dialog = null;
+        dialog.OnResult(result);
+    }
+
     static async Task HandleSearchKeyAsync(Pane pane, ConsoleKeyInfo key)
     {
         SearchState s = pane.Search;
