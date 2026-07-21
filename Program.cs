@@ -616,6 +616,83 @@ static class OperationLog
     }
 }
 
+static class RecycleBin
+{
+    const uint FO_DELETE = 0x0003;
+    const ushort FOF_ALLOWUNDO = 0x0040;
+    const ushort FOF_NOCONFIRMATION = 0x0010;
+    const ushort FOF_SILENT = 0x0004;
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    struct SHFILEOPSTRUCTW
+    {
+        public IntPtr hwnd;
+        public uint wFunc;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)]
+        public string pFrom;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)]
+        public string? pTo;
+        public ushort fFlags;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+        public bool fAnyOperationsAborted;
+        public IntPtr hNameMappings;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)]
+        public string? lpszProgressTitle;
+    }
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    static extern int SHFileOperationW(ref SHFILEOPSTRUCTW lpFileOp);
+
+    // SHFileOperationW requires pFrom to be a list of paths terminated by TWO null characters
+    // (a single trailing '\0' only terminates the last path in the list; Windows scans for the
+    // *second* consecutive null to know the whole multi-string buffer has ended). Forgetting the
+    // second '\0' causes SHFileOperationW to read past the buffer or silently fail.
+    public static bool TrySend(string path, out string error)
+    {
+        error = "";
+
+        if (!System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+            System.Runtime.InteropServices.OSPlatform.Windows))
+        {
+            error = "not supported on this platform";
+            return false;
+        }
+
+        try
+        {
+            var fileOp = new SHFILEOPSTRUCTW
+            {
+                hwnd = IntPtr.Zero,
+                wFunc = FO_DELETE,
+                pFrom = path + "\0\0", // double-null terminated, single-entry list
+                pTo = null,
+                fFlags = (ushort)(FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT),
+                fAnyOperationsAborted = false,
+                hNameMappings = IntPtr.Zero,
+                lpszProgressTitle = null,
+            };
+
+            int result = SHFileOperationW(ref fileOp);
+            if (result != 0)
+            {
+                error = $"SHFileOperationW failed (code {result})";
+                return false;
+            }
+            if (fileOp.fAnyOperationsAborted)
+            {
+                error = "operation aborted";
+                return false;
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+}
+
 abstract class DialogState
 {
     public string Title = "";
