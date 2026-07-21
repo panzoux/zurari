@@ -517,6 +517,28 @@ abstract class DialogState
     public string Title = "";
 }
 
+sealed class ConfirmDialogState : DialogState
+{
+    public string Message = "";
+    public Action<bool?> OnResult = _ => { };   // true=Yes, false=No, null=Esc
+}
+
+sealed class TextInputDialogState : DialogState
+{
+    public string Buffer = "";
+    public int CursorPos;
+    public Action<string?> OnResult = _ => { }; // null=キャンセル
+}
+
+sealed class ListSelectDialogState : DialogState
+{
+    public List<string> AllItems = new();
+    public List<string> FilteredItems = new();
+    public string FilterQuery = "";
+    public int Selected;
+    public Action<string?> OnResult = _ => { }; // 確定項目の文字列 or null
+}
+
 sealed class SearchState
 {
     public bool Active;
