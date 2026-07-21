@@ -4496,30 +4496,60 @@ static class Program
     // frame[y] の表示列 x から displayWidth 分を content で上書きする。
     // CJK混在時、文字インデックスと表示列インデックスが一致しないため、
     // 表示幅ベースで文字単位に分解してから置換区間を決定する。
+    static readonly System.Text.RegularExpressions.Regex AnsiSgrRegex =
+        new System.Text.RegularExpressions.Regex("\x1b\\[[0-9;]*m", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    // frame[y] の表示列 x から displayWidth 分を content で上書きする。
+    // 対象行はディレクトリ色分けなどでANSIエスケープを含みうる。エスケープシーケンスを
+    // 直後の可視文字に付随させた「セル」単位で走査することで、表示幅計算にエスケープの
+    // バイト数を含めない(ANSIバイトを幅1の通常文字として数えると桁計算がエスケープの
+    // 長さ分ズレ、置換範囲がエスケープの途中で切れて色コードの対応が崩れる)。
+    // 置換範囲の外側(ボックスの左右)の元の装飾は保持し、置換範囲の直前・直後には
+    // 明示的なリセットを挿入することで、色が置換テキストや隣接セルへ漏れるのを防ぐ。
     static void OverwriteFrameRow(string[] frame, int y, int x, string content, int frameWidth, int frameHeight)
     {
         if (y < 0 || y >= frameHeight) return;
 
-        // 対象行(ディレクトリ色分けなどでANSIエスケープを含みうる)をセル単位で
-        // 走査する前にプレーン化する。ANSIバイトを表示幅1の通常文字として数えると
-        // 桁計算がエスケープシーケンスの長さ分ズレ、置換範囲がエスケープシーケンスの
-        // 途中で切れて色コードの対応が崩れる(境界線が着色されて見える等の原因になる)。
-        // 切り詰め時の扱いは FitRowToWidth と同水準の割り切り(装飾を落として正確さを優先)。
-        string baseLine = StripAnsiForWidth(frame[y]);
-        var cells = new List<string>();
-        var widths = new List<int>();
-        foreach (char c in baseLine)
+        string baseLine = frame[y];
+        var escMatches = AnsiSgrRegex.Matches(baseLine);
+
+        var cellText = new List<string>();
+        var cellWidth = new List<int>();
+        var pendingEscapes = new System.Text.StringBuilder();
+        int escIdx = 0;
+        int pos = 0;
+        while (pos < baseLine.Length)
         {
-            cells.Add(c.ToString());
-            widths.Add(CharacterWidth.GetCharWidth(c));
+            if (escIdx < escMatches.Count && escMatches[escIdx].Index == pos)
+            {
+                pendingEscapes.Append(escMatches[escIdx].Value);
+                pos += escMatches[escIdx].Length;
+                escIdx++;
+                continue;
+            }
+            cellText.Add(pendingEscapes.ToString() + baseLine[pos]);
+            cellWidth.Add(CharacterWidth.GetCharWidth(baseLine[pos]));
+            pendingEscapes.Clear();
+            pos++;
+        }
+        if (pendingEscapes.Length > 0)
+        {
+            // 行末に取り残されたエスケープ(直後に可視文字がない、例: 末尾の直前のリセット)。
+            if (cellText.Count > 0)
+                cellText[^1] = cellText[^1] + pendingEscapes.ToString();
+            else
+            {
+                cellText.Add(pendingEscapes.ToString());
+                cellWidth.Add(0);
+            }
         }
 
-        var startCol = new int[cells.Count];
+        var startCol = new int[cellText.Count];
         int col = 0;
-        for (int i = 0; i < cells.Count; i++)
+        for (int i = 0; i < cellText.Count; i++)
         {
             startCol[i] = col;
-            col += widths[i];
+            col += cellWidth[i];
         }
         int totalWidth = col;
 
@@ -4527,34 +4557,38 @@ static class Program
         if (x < 0 || x >= totalWidth || displayWidth <= 0) return;
 
         int startIdx = -1, endIdx = -1; // endIdx は exclusive
-        for (int i = 0; i < cells.Count; i++)
+        for (int i = 0; i < cellText.Count; i++)
         {
             if (startCol[i] >= x && startIdx < 0) startIdx = i;
             if (startCol[i] < x + displayWidth) endIdx = i + 1;
         }
         if (startIdx < 0) return; // 置換範囲が見つからない場合は元の行(frame[y])に手を加えない
         if (endIdx < startIdx) endIdx = startIdx;
-        endIdx = Math.Min(endIdx, cells.Count);
+        endIdx = Math.Min(endIdx, cellText.Count);
 
         int removedWidth = 0;
         for (int i = startIdx; i < endIdx; i++)
-            removedWidth += widths[i];
+            removedWidth += cellWidth[i];
 
         string replacement = content;
         int replacementWidth = CharacterWidth.GetStringWidth(StripAnsiForWidth(replacement));
         if (replacementWidth < removedWidth)
             replacement += new string(' ', removedWidth - replacementWidth);
 
-        cells.RemoveRange(startIdx, endIdx - startIdx);
-        cells.Insert(startIdx, replacement);
+        var result = new System.Text.StringBuilder();
+        for (int i = 0; i < startIdx; i++) result.Append(cellText[i]);
+        result.Append("\x1b[0m"); // 除去範囲より前の装飾が置換テキストへ漏れないようリセット
+        result.Append(replacement);
+        result.Append("\x1b[0m"); // 置換テキストの装飾(反転カーソル等)が後続セルへ漏れないようリセット
+        for (int i = endIdx; i < cellText.Count; i++) result.Append(cellText[i]);
 
-        frame[y] = string.Concat(cells);
+        frame[y] = result.ToString();
     }
 
     // ANSI エスケープシーケンス(色・反転等)を取り除いた表示幅計算用のプレーン文字列を返す。
     static string StripAnsiForWidth(string text)
     {
-        return System.Text.RegularExpressions.Regex.Replace(text, "\x1b\\[[0-9;]*m", "");
+        return AnsiSgrRegex.Replace(text, "");
     }
 
     static void WriteLineAt(int x, int y, string text)
