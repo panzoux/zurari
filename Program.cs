@@ -693,6 +693,71 @@ static class RecycleBin
     }
 }
 
+static class Bookmarks
+{
+    static string? _pathOverride;
+
+    internal static void ResetForTest(string filePath)
+    {
+        _pathOverride = filePath;
+    }
+
+    static string FilePath
+    {
+        get
+        {
+            if (_pathOverride != null) return _pathOverride;
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "zurari");
+            return Path.Combine(dir, "bookmarks.txt");
+        }
+    }
+
+    public static List<string> Load()
+    {
+        var result = new List<string>();
+        try
+        {
+            if (!File.Exists(FilePath)) return result;
+            foreach (string line in File.ReadAllLines(FilePath, Encoding.UTF8))
+            {
+                string trimmed = line.Trim();
+                if (trimmed.Length > 0)
+                    result.Add(trimmed);
+            }
+        }
+        catch
+        {
+            // Ignore unreadable bookmarks file; treat as empty.
+        }
+        return result;
+    }
+
+    public static bool Add(string path)
+    {
+        var existing = Load();
+        foreach (string p in existing)
+        {
+            if (string.Equals(p, path, StringComparison.OrdinalIgnoreCase))
+                return false; // already present
+        }
+
+        try
+        {
+            string dir = Path.GetDirectoryName(FilePath) ?? ".";
+            Directory.CreateDirectory(dir);
+            existing.Add(path);
+            File.WriteAllLines(FilePath, existing, Encoding.UTF8);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+}
+
 abstract class DialogState
 {
     public string Title = "";
@@ -2455,6 +2520,14 @@ static class Program
                     UpdateHorizontalScroll(pane);
                     await RebuildRightSideAsync(pane, pane.ActiveColumn);
                     if (pane.Preview.IsVisible) StartPreviewLoad(pane);
+                }
+                else if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
+                {
+                    RequestBookmarkAdd(pane);
+                }
+                else if (key.Modifiers == ConsoleModifiers.None)
+                {
+                    RequestBookmarkJump(pane);
                 }
                 break;
 
@@ -4230,6 +4303,38 @@ static class Program
 
         ShowListSelect(
             "ヒストリ",
+            items,
+            async selected =>
+            {
+                if (selected == null) return;
+                await JumpToPathAsync(pane, selected);
+            });
+    }
+
+    static void RequestBookmarkAdd(Pane pane)
+    {
+        string currentDir = pane.Columns[pane.ActiveColumn].Path;
+        if (currentDir == "::DRIVES::")
+        {
+            _lastErrorMessage = "ドライブ一覧はブックマークできません";
+            return;
+        }
+
+        bool added = Bookmarks.Add(currentDir);
+        _lastErrorMessage = added ? $"ブックマークに追加: {currentDir}" : $"既に登録済み: {currentDir}";
+    }
+
+    static void RequestBookmarkJump(Pane pane)
+    {
+        var items = Bookmarks.Load();
+        if (items.Count == 0)
+        {
+            _lastErrorMessage = "ブックマークはまだありません";
+            return;
+        }
+
+        ShowListSelect(
+            "ブックマーク",
             items,
             async selected =>
             {
