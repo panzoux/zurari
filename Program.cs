@@ -572,6 +572,66 @@ static class DialogLayout
     }
 }
 
+static class TextInputBuffer
+{
+    public static (string Buffer, int CursorPos) Insert(string buffer, int cursorPos, char ch)
+    {
+        int pos = Math.Clamp(cursorPos, 0, buffer.Length);
+        string newBuffer = buffer.Insert(pos, ch.ToString());
+        return (newBuffer, pos + 1);
+    }
+
+    public static (string Buffer, int CursorPos) InsertString(string buffer, int cursorPos, string text)
+    {
+        int pos = Math.Clamp(cursorPos, 0, buffer.Length);
+        string newBuffer = buffer.Insert(pos, text);
+        return (newBuffer, pos + text.Length);
+    }
+
+    public static (string Buffer, int CursorPos) Backspace(string buffer, int cursorPos)
+    {
+        int pos = Math.Clamp(cursorPos, 0, buffer.Length);
+        if (pos == 0) return (buffer, pos);
+        string newBuffer = buffer.Remove(pos - 1, 1);
+        return (newBuffer, pos - 1);
+    }
+
+    public static (string Buffer, int CursorPos) Delete(string buffer, int cursorPos)
+    {
+        int pos = Math.Clamp(cursorPos, 0, buffer.Length);
+        if (pos >= buffer.Length) return (buffer, pos);
+        string newBuffer = buffer.Remove(pos, 1);
+        return (newBuffer, pos);
+    }
+
+    public static int MoveLeft(string buffer, int cursorPos)
+    {
+        return Math.Max(0, cursorPos - 1);
+    }
+
+    public static int MoveRight(string buffer, int cursorPos)
+    {
+        return Math.Min(buffer.Length, cursorPos + 1);
+    }
+
+    public static int Home(string buffer, int cursorPos)
+    {
+        return 0;
+    }
+
+    public static int End(string buffer, int cursorPos)
+    {
+        return buffer.Length;
+    }
+
+    // カーソルより手前の文字列を CharacterWidth で表示幅換算し、画面上の列位置を返す。
+    public static int DisplayColumnAtCursor(string buffer, int cursorPos)
+    {
+        int pos = Math.Clamp(cursorPos, 0, buffer.Length);
+        return CharacterWidth.GetStringWidth(buffer.Substring(0, pos));
+    }
+}
+
 sealed class SearchState
 {
     public bool Active;
