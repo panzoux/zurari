@@ -3466,6 +3466,171 @@ static class Program
         dialog.OnResult(result);
     }
 
+    static Task HandleDialogKeyAsync(Pane pane, ConsoleKeyInfo key)
+    {
+        DialogState? dialog = State.Dialog;
+        if (dialog == null) return Task.CompletedTask;
+
+        switch (dialog)
+        {
+            case ConfirmDialogState confirm:
+                HandleConfirmDialogKey(confirm, key);
+                break;
+
+            case TextInputDialogState textInput:
+                HandleTextInputDialogKey(textInput, key);
+                break;
+
+            case ListSelectDialogState listSelect:
+                HandleListSelectDialogKey(listSelect, key);
+                break;
+        }
+
+        return Task.CompletedTask;
+    }
+
+    static void HandleConfirmDialogKey(ConfirmDialogState dialog, ConsoleKeyInfo key)
+    {
+        if (key.Key == ConsoleKey.Escape)
+        {
+            CloseConfirmDialog(dialog, null);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.Enter || key.KeyChar is 'y' or 'Y')
+        {
+            CloseConfirmDialog(dialog, true);
+            return;
+        }
+
+        if (key.KeyChar is 'n' or 'N')
+        {
+            CloseConfirmDialog(dialog, false);
+            return;
+        }
+
+        // Everything else is swallowed.
+    }
+
+    static void HandleTextInputDialogKey(TextInputDialogState dialog, ConsoleKeyInfo key)
+    {
+        if (key.Key == ConsoleKey.Escape)
+        {
+            CloseTextInputDialog(dialog, null);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.Enter)
+        {
+            CloseTextInputDialog(dialog, dialog.Buffer);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.Backspace)
+        {
+            (dialog.Buffer, dialog.CursorPos) = TextInputBuffer.Backspace(dialog.Buffer, dialog.CursorPos);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.Delete)
+        {
+            (dialog.Buffer, dialog.CursorPos) = TextInputBuffer.Delete(dialog.Buffer, dialog.CursorPos);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.LeftArrow)
+        {
+            dialog.CursorPos = TextInputBuffer.MoveLeft(dialog.Buffer, dialog.CursorPos);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.RightArrow)
+        {
+            dialog.CursorPos = TextInputBuffer.MoveRight(dialog.Buffer, dialog.CursorPos);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.Home)
+        {
+            dialog.CursorPos = TextInputBuffer.Home(dialog.Buffer, dialog.CursorPos);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.End)
+        {
+            dialog.CursorPos = TextInputBuffer.End(dialog.Buffer, dialog.CursorPos);
+            return;
+        }
+
+        // 文字受け取り: HandleSearchKeyAsync と同一の判定(制御文字を除外)。
+        // IME確定文字・サロゲートペアもここを通り、TextInputBuffer.Insert が
+        // string.Insert で正しく結合する(Program.cs の HandleSearchKeyAsync 実装を参照)。
+        if (!char.IsControl(key.KeyChar))
+        {
+            (dialog.Buffer, dialog.CursorPos) = TextInputBuffer.Insert(dialog.Buffer, dialog.CursorPos, key.KeyChar);
+            return;
+        }
+
+        // Everything else is swallowed.
+    }
+
+    static void HandleListSelectDialogKey(ListSelectDialogState dialog, ConsoleKeyInfo key)
+    {
+        if (key.Key == ConsoleKey.Escape)
+        {
+            CloseListSelectDialog(dialog, null);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.Enter)
+        {
+            string? result = (dialog.Selected >= 0 && dialog.Selected < dialog.FilteredItems.Count)
+                ? dialog.FilteredItems[dialog.Selected]
+                : null;
+            CloseListSelectDialog(dialog, result);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.DownArrow)
+        {
+            dialog.Selected = ListFilter.ClampSelected(dialog.Selected + 1, dialog.FilteredItems.Count);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.UpArrow)
+        {
+            dialog.Selected = ListFilter.ClampSelected(dialog.Selected - 1, dialog.FilteredItems.Count);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.Backspace)
+        {
+            if (dialog.FilterQuery.Length > 0)
+            {
+                dialog.FilterQuery = dialog.FilterQuery[..^1];
+                RecomputeListSelectFilter(dialog);
+            }
+            return;
+        }
+
+        // 絞り込みクエリへの文字追加: HandleSearchKeyAsync と同一の判定。
+        if (!char.IsControl(key.KeyChar))
+        {
+            dialog.FilterQuery += key.KeyChar;
+            RecomputeListSelectFilter(dialog);
+            return;
+        }
+
+        // Everything else is swallowed.
+    }
+
+    // 対象リストは高々数百件のため、キー入力ごとに全件再評価する(デバウンスなし。spec「ダイアログ設計」節)。
+    static void RecomputeListSelectFilter(ListSelectDialogState dialog)
+    {
+        dialog.FilteredItems = ListFilter.Recompute(dialog.AllItems, dialog.FilterQuery, regexMode: false, _migemo);
+        dialog.Selected = ListFilter.ClampSelected(dialog.Selected, dialog.FilteredItems.Count);
+    }
+
     static async Task HandleSearchKeyAsync(Pane pane, ConsoleKeyInfo key)
     {
         SearchState s = pane.Search;
