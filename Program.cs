@@ -2213,6 +2213,31 @@ static class Program
                 RefreshCurrent(pane);
                 break;
 
+            case ConsoleKey.F9: // TEMP DEBUG (Phase 3 manual verification only — removed in Task 10)
+                ShowConfirm("デバッグ確認", "これはテスト用の確認ダイアログです。続行しますか?", result =>
+                {
+                    _lastErrorMessage = $"[F9] result = {(result == null ? "null(Esc)" : result.ToString())}";
+                });
+                break;
+
+            case ConsoleKey.F10: // TEMP DEBUG (Phase 3 manual verification only — removed in Task 10)
+                ShowTextInput("デバッグ入力", "初期値123", result =>
+                {
+                    _lastErrorMessage = result == null ? "[F10] キャンセル" : $"[F10] 確定: {result}";
+                });
+                break;
+
+            case ConsoleKey.F11: // TEMP DEBUG (Phase 3 manual verification only — removed in Task 10)
+                ShowListSelect("デバッグ選択", new List<string>
+                {
+                    "りんご.txt", "banana.txt", "報告書_2025.pdf", "budget.xlsx",
+                    "テスト.docx", "sample_data.csv", "画像フォルダ/", "旅行の写真.jpg",
+                }, result =>
+                {
+                    _lastErrorMessage = result == null ? "[F11] キャンセル" : $"[F11] 選択: {result}";
+                });
+                break;
+
             case ConsoleKey.PageUp:
                 NavigationHelper.PageUp(pane.Columns[pane.ActiveColumn], Console.WindowHeight - 3);
                 UpdateHorizontalScroll(pane);
