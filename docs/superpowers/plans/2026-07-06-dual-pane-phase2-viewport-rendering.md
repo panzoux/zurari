@@ -629,7 +629,7 @@ static void DrawPreviewToLines(Line[] lines, PreviewContent content, int startX,
 - [x] `DrawColumnToLines`/`DrawPreviewToLines` の直接呼び出しが `DrawPaneToLines` 経由の1箇所ずつに統一されている(他に残っていない)。
 - [x] `dotnet build Zurari.csproj` が exit 0 で成功する。
 - [x] `dotnet test Zurari.Tests/Zurari.Tests.csproj` が全緑(`Passed!`)である(69/69: 既存64 + 新規 `ViewportRenderingTests` 2 Fact + `FooterCompositionTests` 3 Theory)。
-- [ ] 単一ペイン・ダイアログなしの状態で、手動確認手順(M1〜M6)により Phase 1 以前と画面出力が視覚的に同一であることを確認した。**未実施** — 実行セッション(エージェント)はインタラクティブな TUI 端末操作(矢印キー・Enter・Shift+V 等の実キー入力とその画面反映確認)を行う手段を持たないため、この項目は人間による実機確認が必要。自動テスト(build/test)は全緑だが、これは M1〜M6 の代替にはならない。
+- [x] 単一ペイン・ダイアログなしの状態で、手動確認手順(M1〜M6)により Phase 1 以前と画面出力が視覚的に同一であることを確認した。(ユーザーが `dotnet run --project Zurari.csproj` で実機確認済み)
 - [x] `focused` 引数は `DrawPaneToLines` に存在し、常に `true` が渡されている(減光パレット自体は未実装、Phase 5 に持ち越し)。
 
 ## 未解決事項
@@ -638,4 +638,4 @@ static void DrawPreviewToLines(Line[] lines, PreviewContent content, int startX,
    - 発覚経緯: サブエージェントによる code-quality review(2段階レビューの2段目)がこの回帰を検出。計画書の記述を機械的にコピーした結果であり、実装セッション側の読み替え判断ミスではない。
    - 対応: `DrawPaneToLines(lines, pane, 0, height, true, width);`(`height` をそのまま渡す)に修正するコミット `2f5fda9` を追加。修正後、`dotnet build`/`dotnet test`(69/69)ともに green を維持。
    - 今後の Phase(特に Phase 5 分割ペイン)への影響: 将来、実際に画面を複数ペインに分割して各ペインの高さがフッター2行分を除いた画面全体より小さくなる場合、`DrawColumnToLines`/`DrawPreviewToLines` 内の `visibleHeight = frameHeight - 3` という「3行予約」計算自体を見直す必要がある(現状はヘッダ1行+共有フッター2行を暗黙に同じ `frameHeight` 予算から引く設計だが、共有フッターは既にペイン矩形の外にあるため、この「3」という数値の意味を Phase 5 で再設計しないと同様の行数ズレが再発する)。Phase 5 の計画作成時にこの点を明記すること。
-2. 手動確認手順(M1〜M6)は実行セッション内では検証できていない。ユーザー側で実機(推奨: 30行×100列程度の端末)にて `dotnet run --project Zurari.csproj` を実行し、本ドキュメントの M1〜M6 を目視確認すること。
+2. ~~手動確認手順(M1〜M6)は実行セッション内では検証できていない。~~ → ユーザーが `dotnet run --project Zurari.csproj` で M1〜M6 を実機確認し、Phase 1 以前と画面出力が視覚的に同一であることを確認済み。Phase 2 は完了条件チェックリスト全項目クリア。
