@@ -517,6 +517,144 @@ abstract class DialogState
     public string Title = "";
 }
 
+sealed class ConfirmDialogState : DialogState
+{
+    public string Message = "";
+    public Action<bool?> OnResult = _ => { };   // true=Yes, false=No, null=Esc
+}
+
+sealed class TextInputDialogState : DialogState
+{
+    public string Buffer = "";
+    public int CursorPos;
+    public Action<string?> OnResult = _ => { }; // null=キャンセル
+}
+
+sealed class ListSelectDialogState : DialogState
+{
+    public List<string> AllItems = new();
+    public List<string> FilteredItems = new();
+    public string FilterQuery = "";
+    public int Selected;
+    public Action<string?> OnResult = _ => { }; // 確定項目の文字列 or null
+}
+
+readonly record struct DialogRect(int X, int Y, int Width, int Height);
+
+static class DialogLayout
+{
+    const int MarginEachSide = 1; // 画面端からの最小余白(片側)
+    const int MinContentWidth = 2;
+    const int MinContentHeight = 1;
+
+    public static DialogRect CalcDialogRect(int contentWidth, int contentHeight, int screenW, int screenH)
+    {
+        int cw = Math.Max(contentWidth, MinContentWidth);
+        int ch = Math.Max(contentHeight, MinContentHeight);
+
+        int outerWidth = cw + 2;   // 左右の枠線1文字ずつ
+        int outerHeight = ch + 2;  // 上下の枠線1文字ずつ
+
+        int maxWidth = Math.Max(4, screenW - MarginEachSide * 2);
+        int maxHeight = Math.Max(3, screenH - MarginEachSide * 2);
+
+        outerWidth = Math.Min(outerWidth, maxWidth);
+        outerHeight = Math.Min(outerHeight, maxHeight);
+
+        int x = Math.Max(0, (screenW - outerWidth) / 2);
+        int y = Math.Max(0, (screenH - outerHeight) / 2);
+
+        // 画面外にはみ出さないようクランプ(screenW/screenH が極小な場合の保険)
+        if (x + outerWidth > screenW) x = Math.Max(0, screenW - outerWidth);
+        if (y + outerHeight > screenH) y = Math.Max(0, screenH - outerHeight);
+
+        return new DialogRect(x, y, outerWidth, outerHeight);
+    }
+}
+
+static class TextInputBuffer
+{
+    public static (string Buffer, int CursorPos) Insert(string buffer, int cursorPos, char ch)
+    {
+        int pos = Math.Clamp(cursorPos, 0, buffer.Length);
+        string newBuffer = buffer.Insert(pos, ch.ToString());
+        return (newBuffer, pos + 1);
+    }
+
+    public static (string Buffer, int CursorPos) InsertString(string buffer, int cursorPos, string text)
+    {
+        int pos = Math.Clamp(cursorPos, 0, buffer.Length);
+        string newBuffer = buffer.Insert(pos, text);
+        return (newBuffer, pos + text.Length);
+    }
+
+    public static (string Buffer, int CursorPos) Backspace(string buffer, int cursorPos)
+    {
+        int pos = Math.Clamp(cursorPos, 0, buffer.Length);
+        if (pos == 0) return (buffer, pos);
+        string newBuffer = buffer.Remove(pos - 1, 1);
+        return (newBuffer, pos - 1);
+    }
+
+    public static (string Buffer, int CursorPos) Delete(string buffer, int cursorPos)
+    {
+        int pos = Math.Clamp(cursorPos, 0, buffer.Length);
+        if (pos >= buffer.Length) return (buffer, pos);
+        string newBuffer = buffer.Remove(pos, 1);
+        return (newBuffer, pos);
+    }
+
+    public static int MoveLeft(string buffer, int cursorPos)
+    {
+        return Math.Max(0, cursorPos - 1);
+    }
+
+    public static int MoveRight(string buffer, int cursorPos)
+    {
+        return Math.Min(buffer.Length, cursorPos + 1);
+    }
+
+    public static int Home(string buffer, int cursorPos)
+    {
+        return 0;
+    }
+
+    public static int End(string buffer, int cursorPos)
+    {
+        return buffer.Length;
+    }
+
+    // カーソルより手前の文字列を CharacterWidth で表示幅換算し、画面上の列位置を返す。
+    public static int DisplayColumnAtCursor(string buffer, int cursorPos)
+    {
+        int pos = Math.Clamp(cursorPos, 0, buffer.Length);
+        return CharacterWidth.GetStringWidth(buffer.Substring(0, pos));
+    }
+}
+
+static class ListFilter
+{
+    public static List<string> Recompute(List<string> allItems, string query, bool regexMode, MigemoProvider? migemo)
+    {
+        if (string.IsNullOrEmpty(query))
+            return new List<string>(allItems);
+
+        var result = new List<string>();
+        foreach (string item in allItems)
+        {
+            if (SearchHelper.MatchesSearchQuery(item, query, regexMode, migemo))
+                result.Add(item);
+        }
+        return result;
+    }
+
+    public static int ClampSelected(int selected, int filteredCount)
+    {
+        if (filteredCount <= 0) return 0;
+        return Math.Clamp(selected, 0, filteredCount - 1);
+    }
+}
+
 sealed class SearchState
 {
     public bool Active;
@@ -1789,7 +1927,7 @@ static class Program
                 if (!Console.KeyAvailable)
                 {
                     Pane pane = FocusedPane;
-                    if (pane.Leap.Active
+                    if (State.Dialog == null && pane.Leap.Active
                         && pane.Leap.NeedsRecompute
                         && (DateTime.UtcNow - pane.Leap.LastInputTime).TotalMilliseconds >= NavigationDebounceMs)
                     {
@@ -1799,7 +1937,7 @@ static class Program
                         await RebuildRightSideAsync(pane, pane.ActiveColumn);
                         _redrawGate.Request();
                     }
-                    else if (pane.Search.Active
+                    else if (State.Dialog == null && pane.Search.Active
                         && pane.Search.NeedsRecompute
                         && (DateTime.UtcNow - pane.Search.LastInputTime).TotalMilliseconds >= 300)
                     {
@@ -1817,6 +1955,12 @@ static class Program
                 _redrawGate.Request(); // any key → state may change → redraw next loop pass
 
                 Pane focusedPane = FocusedPane;
+
+                if (State.Dialog != null)
+                {
+                    await HandleDialogKeyAsync(focusedPane, key);
+                    continue;
+                }
 
                 if (focusedPane.Leap.Active)
                 {
@@ -3273,6 +3417,226 @@ static class Program
         return segments.Count > 0 ? segments.ToArray() : new[] { filter };
     }
 
+    static void ShowConfirm(string title, string message, Action<bool?> onResult)
+    {
+        State.Dialog = new ConfirmDialogState
+        {
+            Title = title,
+            Message = message,
+            OnResult = onResult,
+        };
+    }
+
+    static void ShowTextInput(string title, string initialValue, Action<string?> onResult)
+    {
+        State.Dialog = new TextInputDialogState
+        {
+            Title = title,
+            Buffer = initialValue,
+            CursorPos = initialValue.Length,
+            OnResult = onResult,
+        };
+    }
+
+    static void ShowListSelect(string title, IReadOnlyList<string> items, Action<string?> onResult)
+    {
+        var allItems = new List<string>(items);
+        State.Dialog = new ListSelectDialogState
+        {
+            Title = title,
+            AllItems = allItems,
+            FilteredItems = new List<string>(allItems),
+            FilterQuery = "",
+            Selected = 0,
+            OnResult = onResult,
+        };
+    }
+
+    // 開いているダイアログを閉じ、結果コールバックを呼ぶ共通クローズ処理。
+    // 呼び出し元(HandleDialogKeyAsync)が確定/キャンセル時に呼ぶ。
+    static void CloseConfirmDialog(ConfirmDialogState dialog, bool? result)
+    {
+        State.Dialog = null;
+        dialog.OnResult(result);
+    }
+
+    static void CloseTextInputDialog(TextInputDialogState dialog, string? result)
+    {
+        State.Dialog = null;
+        dialog.OnResult(result);
+    }
+
+    static void CloseListSelectDialog(ListSelectDialogState dialog, string? result)
+    {
+        State.Dialog = null;
+        dialog.OnResult(result);
+    }
+
+    static Task HandleDialogKeyAsync(Pane pane, ConsoleKeyInfo key)
+    {
+        DialogState? dialog = State.Dialog;
+        if (dialog == null) return Task.CompletedTask;
+
+        switch (dialog)
+        {
+            case ConfirmDialogState confirm:
+                HandleConfirmDialogKey(confirm, key);
+                break;
+
+            case TextInputDialogState textInput:
+                HandleTextInputDialogKey(textInput, key);
+                break;
+
+            case ListSelectDialogState listSelect:
+                HandleListSelectDialogKey(listSelect, key);
+                break;
+        }
+
+        return Task.CompletedTask;
+    }
+
+    static void HandleConfirmDialogKey(ConfirmDialogState dialog, ConsoleKeyInfo key)
+    {
+        if (key.Key == ConsoleKey.Escape)
+        {
+            CloseConfirmDialog(dialog, null);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.Enter || key.KeyChar is 'y' or 'Y')
+        {
+            CloseConfirmDialog(dialog, true);
+            return;
+        }
+
+        if (key.KeyChar is 'n' or 'N')
+        {
+            CloseConfirmDialog(dialog, false);
+            return;
+        }
+
+        // Everything else is swallowed.
+    }
+
+    static void HandleTextInputDialogKey(TextInputDialogState dialog, ConsoleKeyInfo key)
+    {
+        if (key.Key == ConsoleKey.Escape)
+        {
+            CloseTextInputDialog(dialog, null);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.Enter)
+        {
+            CloseTextInputDialog(dialog, dialog.Buffer);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.Backspace)
+        {
+            (dialog.Buffer, dialog.CursorPos) = TextInputBuffer.Backspace(dialog.Buffer, dialog.CursorPos);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.Delete)
+        {
+            (dialog.Buffer, dialog.CursorPos) = TextInputBuffer.Delete(dialog.Buffer, dialog.CursorPos);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.LeftArrow)
+        {
+            dialog.CursorPos = TextInputBuffer.MoveLeft(dialog.Buffer, dialog.CursorPos);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.RightArrow)
+        {
+            dialog.CursorPos = TextInputBuffer.MoveRight(dialog.Buffer, dialog.CursorPos);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.Home)
+        {
+            dialog.CursorPos = TextInputBuffer.Home(dialog.Buffer, dialog.CursorPos);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.End)
+        {
+            dialog.CursorPos = TextInputBuffer.End(dialog.Buffer, dialog.CursorPos);
+            return;
+        }
+
+        // 文字受け取り: HandleSearchKeyAsync と同一の判定(制御文字を除外)。
+        // IME確定文字・サロゲートペアもここを通り、TextInputBuffer.Insert が
+        // string.Insert で正しく結合する(Program.cs の HandleSearchKeyAsync 実装を参照)。
+        if (!char.IsControl(key.KeyChar))
+        {
+            (dialog.Buffer, dialog.CursorPos) = TextInputBuffer.Insert(dialog.Buffer, dialog.CursorPos, key.KeyChar);
+            return;
+        }
+
+        // Everything else is swallowed.
+    }
+
+    static void HandleListSelectDialogKey(ListSelectDialogState dialog, ConsoleKeyInfo key)
+    {
+        if (key.Key == ConsoleKey.Escape)
+        {
+            CloseListSelectDialog(dialog, null);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.Enter)
+        {
+            string? result = (dialog.Selected >= 0 && dialog.Selected < dialog.FilteredItems.Count)
+                ? dialog.FilteredItems[dialog.Selected]
+                : null;
+            CloseListSelectDialog(dialog, result);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.DownArrow)
+        {
+            dialog.Selected = ListFilter.ClampSelected(dialog.Selected + 1, dialog.FilteredItems.Count);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.UpArrow)
+        {
+            dialog.Selected = ListFilter.ClampSelected(dialog.Selected - 1, dialog.FilteredItems.Count);
+            return;
+        }
+
+        if (key.Key == ConsoleKey.Backspace)
+        {
+            if (dialog.FilterQuery.Length > 0)
+            {
+                dialog.FilterQuery = dialog.FilterQuery[..^1];
+                RecomputeListSelectFilter(dialog);
+            }
+            return;
+        }
+
+        // 絞り込みクエリへの文字追加: HandleSearchKeyAsync と同一の判定。
+        if (!char.IsControl(key.KeyChar))
+        {
+            dialog.FilterQuery += key.KeyChar;
+            RecomputeListSelectFilter(dialog);
+            return;
+        }
+
+        // Everything else is swallowed.
+    }
+
+    // 対象リストは高々数百件のため、キー入力ごとに全件再評価する(デバウンスなし。spec「ダイアログ設計」節)。
+    static void RecomputeListSelectFilter(ListSelectDialogState dialog)
+    {
+        dialog.FilteredItems = ListFilter.Recompute(dialog.AllItems, dialog.FilterQuery, regexMode: false, _migemo);
+        dialog.Selected = ListFilter.ClampSelected(dialog.Selected, dialog.FilteredItems.Count);
+    }
+
     static async Task HandleSearchKeyAsync(Pane pane, ConsoleKeyInfo key)
     {
         SearchState s = pane.Search;
@@ -3644,8 +4008,8 @@ static class Program
 
     static void DrawDialogOverlay(string[] frame, int width, int height)
     {
-        // No-op for now — a later phase will implement:
-        // "if State.Dialog != null, overwrite a centered box in the relevant frame region."
+        if (State.Dialog == null) return;
+        ComposeDialogIntoFrame(frame, State.Dialog, width, height);
     }
 
     static void DrawPaneToLines(Line[] lines, Pane pane, int yOffset, int height, bool focused, int width)
@@ -3972,6 +4336,235 @@ static class Program
         }
     }
 
+    static string BuildTitledTopBorder(string title, int innerWidth)
+    {
+        string label = string.IsNullOrEmpty(title) ? "" : $"┤ {title} ├";
+        int labelWidth = CharacterWidth.GetStringWidth(label);
+        if (labelWidth > innerWidth)
+        {
+            label = "";
+            labelWidth = 0;
+        }
+        int leftDashes = Math.Max(1, (innerWidth - labelWidth) / 2);
+        int rightDashes = Math.Max(1, innerWidth - labelWidth - leftDashes);
+        return "┌" + new string('─', leftDashes) + label + new string('─', rightDashes) + "┐";
+    }
+
+    // ダイアログ種別ごとの内容行を組み立てる。カーソル位置は反転スペース(ANSI SGR 7)を
+    // テキスト中に挿入することで表現する(コンソールカーソル自体は非表示のため)。
+    static List<string> BuildDialogContentLines(DialogState dialog)
+    {
+        switch (dialog)
+        {
+            case ConfirmDialogState confirm:
+                return new List<string>
+                {
+                    confirm.Message,
+                    "",
+                    "[Y]es  [N]o  [Esc]キャンセル",
+                };
+
+            case TextInputDialogState textInput:
+            {
+                string beforeCursor = textInput.Buffer.Substring(0, textInput.CursorPos);
+                string atAndAfterCursor = textInput.Buffer.Substring(textInput.CursorPos);
+                string displayLine = beforeCursor + "\x1b[7m \x1b[0m" + atAndAfterCursor;
+                return new List<string>
+                {
+                    displayLine,
+                    "",
+                    "[Enter]確定  [Esc]キャンセル",
+                };
+            }
+
+            case ListSelectDialogState listSelect:
+            {
+                var lines = new List<string>
+                {
+                    "/" + listSelect.FilterQuery + "\x1b[7m \x1b[0m",
+                    "",
+                };
+
+                if (listSelect.FilteredItems.Count == 0)
+                {
+                    lines.Add("(該当なし)");
+                }
+                else
+                {
+                    const int maxVisibleRows = 12;
+                    int total = listSelect.FilteredItems.Count;
+                    int visibleRows = Math.Min(maxVisibleRows, total);
+
+                    int scrollStart = 0;
+                    if (listSelect.Selected >= visibleRows)
+                        scrollStart = listSelect.Selected - visibleRows + 1;
+                    scrollStart = Math.Min(scrollStart, Math.Max(0, total - visibleRows));
+
+                    for (int i = 0; i < visibleRows; i++)
+                    {
+                        int idx = scrollStart + i;
+                        if (idx >= total) break;
+                        string prefix = idx == listSelect.Selected ? "> " : "  ";
+                        string itemText = prefix + listSelect.FilteredItems[idx];
+                        if (idx == listSelect.Selected)
+                            itemText = "\x1b[7m" + itemText + "\x1b[0m";
+                        lines.Add(itemText);
+                    }
+                }
+
+                lines.Add("");
+                lines.Add("[↑↓]選択  [Enter]確定  [Esc]キャンセル");
+                return lines;
+            }
+
+            default:
+                return new List<string> { "" };
+        }
+    }
+
+    static void ComposeDialogIntoFrame(string[] frame, DialogState dialog, int width, int height)
+    {
+        List<string> contentLines = BuildDialogContentLines(dialog);
+        int contentWidth = 0;
+        foreach (string l in contentLines)
+            contentWidth = Math.Max(contentWidth, CharacterWidth.GetStringWidth(StripAnsiForWidth(l)));
+
+        // タイトルもコンテンツ幅の下限に含める("┤ タイトル ├" 分の余白を確保)
+        int titleWidth = CharacterWidth.GetStringWidth(dialog.Title) + 4;
+        contentWidth = Math.Max(contentWidth, titleWidth);
+
+        DialogRect rect = DialogLayout.CalcDialogRect(contentWidth, contentLines.Count, width, height);
+        int innerWidth = rect.Width - 2;
+        int innerHeight = rect.Height - 2;
+
+        string topBorder = BuildTitledTopBorder(dialog.Title, innerWidth);
+        OverwriteFrameRow(frame, rect.Y, rect.X, topBorder, width, height);
+
+        for (int i = 0; i < innerHeight; i++)
+        {
+            string rowText = i < contentLines.Count ? contentLines[i] : "";
+            string rowText2 = FitRowToWidth(rowText, innerWidth);
+            string row = "│" + rowText2 + "│";
+            OverwriteFrameRow(frame, rect.Y + 1 + i, rect.X, row, width, height);
+        }
+
+        string bottomBorder = "└" + new string('─', innerWidth) + "┘";
+        OverwriteFrameRow(frame, rect.Y + rect.Height - 1, rect.X, bottomBorder, width, height);
+    }
+
+    // ANSI付きの行を innerWidth ちょうどの表示幅に整形する。切り詰めが必要な行は
+    // ANSI装飾を落としてプレーンテキストで切り詰め・パディングする(既存のステータスバー実装と
+    // 同水準の割り切り。補足はTask 8.1参照)。
+    static string FitRowToWidth(string rowText, int innerWidth)
+    {
+        string plain = StripAnsiForWidth(rowText);
+        int plainWidth = CharacterWidth.GetStringWidth(plain);
+        if (plainWidth <= innerWidth && plain.Length == rowText.Length)
+        {
+            // ANSIを含まない、かつ幅に収まる行はそのままパディングして返す。
+            return rowText + new string(' ', innerWidth - plainWidth);
+        }
+        string truncated = CharacterWidth.SmartTruncate(plain, innerWidth);
+        return CharacterWidth.PadToWidth(truncated, innerWidth);
+    }
+
+    // frame[y] の表示列 x から displayWidth 分を content で上書きする。
+    // CJK混在時、文字インデックスと表示列インデックスが一致しないため、
+    // 表示幅ベースで文字単位に分解してから置換区間を決定する。
+    static readonly System.Text.RegularExpressions.Regex AnsiSgrRegex =
+        new System.Text.RegularExpressions.Regex("\x1b\\[[0-9;]*m", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    // frame[y] の表示列 x から displayWidth 分を content で上書きする。
+    // 対象行はディレクトリ色分けなどでANSIエスケープを含みうる。エスケープシーケンスを
+    // 直後の可視文字に付随させた「セル」単位で走査することで、表示幅計算にエスケープの
+    // バイト数を含めない(ANSIバイトを幅1の通常文字として数えると桁計算がエスケープの
+    // 長さ分ズレ、置換範囲がエスケープの途中で切れて色コードの対応が崩れる)。
+    // 置換範囲の外側(ボックスの左右)の元の装飾は保持し、置換範囲の直前・直後には
+    // 明示的なリセットを挿入することで、色が置換テキストや隣接セルへ漏れるのを防ぐ。
+    static void OverwriteFrameRow(string[] frame, int y, int x, string content, int frameWidth, int frameHeight)
+    {
+        if (y < 0 || y >= frameHeight) return;
+
+        string baseLine = frame[y];
+        var escMatches = AnsiSgrRegex.Matches(baseLine);
+
+        var cellText = new List<string>();
+        var cellWidth = new List<int>();
+        var pendingEscapes = new System.Text.StringBuilder();
+        int escIdx = 0;
+        int pos = 0;
+        while (pos < baseLine.Length)
+        {
+            if (escIdx < escMatches.Count && escMatches[escIdx].Index == pos)
+            {
+                pendingEscapes.Append(escMatches[escIdx].Value);
+                pos += escMatches[escIdx].Length;
+                escIdx++;
+                continue;
+            }
+            cellText.Add(pendingEscapes.ToString() + baseLine[pos]);
+            cellWidth.Add(CharacterWidth.GetCharWidth(baseLine[pos]));
+            pendingEscapes.Clear();
+            pos++;
+        }
+        if (pendingEscapes.Length > 0)
+        {
+            // 行末に取り残されたエスケープ(直後に可視文字がない、例: 末尾の直前のリセット)。
+            if (cellText.Count > 0)
+                cellText[^1] = cellText[^1] + pendingEscapes.ToString();
+            else
+            {
+                cellText.Add(pendingEscapes.ToString());
+                cellWidth.Add(0);
+            }
+        }
+
+        var startCol = new int[cellText.Count];
+        int col = 0;
+        for (int i = 0; i < cellText.Count; i++)
+        {
+            startCol[i] = col;
+            col += cellWidth[i];
+        }
+        int totalWidth = col;
+
+        int displayWidth = CharacterWidth.GetStringWidth(StripAnsiForWidth(content));
+        if (x < 0 || x >= totalWidth || displayWidth <= 0) return;
+
+        int startIdx = -1, endIdx = -1; // endIdx は exclusive
+        for (int i = 0; i < cellText.Count; i++)
+        {
+            if (startCol[i] >= x && startIdx < 0) startIdx = i;
+            if (startCol[i] < x + displayWidth) endIdx = i + 1;
+        }
+        if (startIdx < 0) return; // 置換範囲が見つからない場合は元の行(frame[y])に手を加えない
+        if (endIdx < startIdx) endIdx = startIdx;
+        endIdx = Math.Min(endIdx, cellText.Count);
+
+        int removedWidth = 0;
+        for (int i = startIdx; i < endIdx; i++)
+            removedWidth += cellWidth[i];
+
+        string replacement = content;
+        int replacementWidth = CharacterWidth.GetStringWidth(StripAnsiForWidth(replacement));
+        if (replacementWidth < removedWidth)
+            replacement += new string(' ', removedWidth - replacementWidth);
+
+        var result = new System.Text.StringBuilder();
+        for (int i = 0; i < startIdx; i++) result.Append(cellText[i]);
+        result.Append("\x1b[0m"); // 除去範囲より前の装飾が置換テキストへ漏れないようリセット
+        result.Append(replacement);
+        result.Append("\x1b[0m"); // 置換テキストの装飾(反転カーソル等)が後続セルへ漏れないようリセット
+        for (int i = endIdx; i < cellText.Count; i++) result.Append(cellText[i]);
+
+        frame[y] = result.ToString();
+    }
+
+    // ANSI エスケープシーケンス(色・反転等)を取り除いた表示幅計算用のプレーン文字列を返す。
+    static string StripAnsiForWidth(string text)
+    {
+        return AnsiSgrRegex.Replace(text, "");
+    }
 
     static void WriteLineAt(int x, int y, string text)
     {
