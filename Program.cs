@@ -512,6 +512,110 @@ sealed class ScreenState
     public DialogState? Dialog;        // Phase 3 で追加。今は宣言のみ。
 }
 
+sealed record OpLogEntry(DateTime Timestamp, int? JobId, string Op, string Result, string Source, string Dest, string Message);
+
+static class OperationLog
+{
+    const int RingLimit = 1000;
+    const long MaxLogSizeBytes = 10L * 1024 * 1024;
+
+    static readonly object _lock = new object();
+    static readonly LinkedList<OpLogEntry> _ring = new LinkedList<OpLogEntry>(); // newest at First
+
+    // Overridable only from tests (InternalsVisibleTo covers Zurari.Tests).
+    static string? _logDirectoryOverride;
+
+    static string LogDirectory
+    {
+        get
+        {
+            if (_logDirectoryOverride != null) return _logDirectoryOverride;
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "zurari");
+        }
+    }
+
+    static string LogFilePath => Path.Combine(LogDirectory, "operations.log");
+    static string RotatedFilePath => Path.Combine(LogDirectory, "operations.log.1");
+
+    internal static void ResetForTest(string logDirectory)
+    {
+        lock (_lock)
+        {
+            _logDirectoryOverride = logDirectory;
+            _ring.Clear();
+        }
+    }
+
+    public static void Append(OpLogEntry e)
+    {
+        lock (_lock)
+        {
+            _ring.AddFirst(e);
+            while (_ring.Count > RingLimit)
+                _ring.RemoveLast();
+
+            TryAppendToFile(e);
+        }
+    }
+
+    static void TryAppendToFile(OpLogEntry e)
+    {
+        try
+        {
+            Directory.CreateDirectory(LogDirectory);
+
+            RotateIfNeeded();
+
+            string line = string.Join('\t',
+                e.Timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+                e.JobId?.ToString() ?? "-",
+                e.Op,
+                e.Result,
+                e.Source,
+                e.Dest,
+                e.Message)
+                .Replace('\n', ' ')
+                .Replace('\r', ' ');
+
+            using var stream = new FileStream(LogFilePath, FileMode.Append, FileAccess.Write, FileShare.Read);
+            using var writer = new StreamWriter(stream, Encoding.UTF8);
+            writer.WriteLine(line);
+        }
+        catch
+        {
+            // Logging must never crash the app. Silently give up on the file sink;
+            // the in-memory ring already has the entry.
+        }
+    }
+
+    static void RotateIfNeeded()
+    {
+        try
+        {
+            var info = new FileInfo(LogFilePath);
+            if (!info.Exists || info.Length < MaxLogSizeBytes) return;
+
+            if (File.Exists(RotatedFilePath))
+                File.Delete(RotatedFilePath);
+            File.Move(LogFilePath, RotatedFilePath);
+        }
+        catch
+        {
+            // Best-effort rotation only.
+        }
+    }
+
+    public static IReadOnlyList<OpLogEntry> Snapshot()
+    {
+        lock (_lock)
+        {
+            return new List<OpLogEntry>(_ring); // already newest-first due to AddFirst
+        }
+    }
+}
+
 abstract class DialogState
 {
     public string Title = "";
