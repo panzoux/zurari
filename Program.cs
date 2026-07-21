@@ -2368,6 +2368,10 @@ static class Program
                 Parent(pane);
                 break;
 
+            case ConsoleKey.Delete:
+                RequestDeleteSelected(pane);
+                break;
+
             case ConsoleKey.V:
                 if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
                 {
@@ -2466,6 +2470,8 @@ static class Program
                     EnterSearchMode(pane);
                 else if (key.KeyChar == '\\' && key.Modifiers == ConsoleModifiers.None)
                     await ShowContextMenuAsync(pane);
+                else if (key.KeyChar == 'd' && key.Modifiers == ConsoleModifiers.None)
+                    RequestDeleteSelected(pane);
                 break;
         }
     }
@@ -2921,6 +2927,79 @@ static class Program
         // directory tree is shallow (Finder behavior: scroll position is preserved).
         int maxHS = pane.ActiveColumn;
         pane.HorizontalScroll = Math.Max(minHS, Math.Min(pane.HorizontalScroll, maxHS));
+    }
+
+    static bool SelectedIsDeletable(Pane pane, out Column col, out string name)
+    {
+        col = pane.Columns[pane.ActiveColumn];
+        name = "";
+        if (col.Path == "::DRIVES::") return false;
+        if (col.Entries.Count == 0) return false;
+        if (col.Selected < 0 || col.Selected >= col.Entries.Count) return false;
+        name = col.Entries[col.Selected];
+        if (name == "<No file>") return false;
+        return true;
+    }
+
+    static void RequestDeleteSelected(Pane pane)
+    {
+        if (!SelectedIsDeletable(pane, out Column col, out string name))
+            return;
+
+        string displayName = name.TrimEnd('/');
+        ShowConfirm(
+            "削除",
+            $"{displayName} を削除しますか?(ごみ箱へ)",
+            async result =>
+            {
+                if (result != true) return;
+                await ExecuteDeleteAsync(pane, col, name);
+            });
+    }
+
+    static async Task ExecuteDeleteAsync(Pane pane, Column col, string name)
+    {
+        string fullPath = Path.Combine(col.Path, name.TrimEnd('/'));
+        bool isDir = name.EndsWith("/");
+        string opName = "DELETE";
+        string result;
+        string message = "";
+
+        bool sentToRecycleBin = false;
+        if (IsWindows())
+        {
+            sentToRecycleBin = RecycleBin.TrySend(fullPath, out string rbError);
+            if (!sentToRecycleBin)
+                message = rbError;
+        }
+
+        if (sentToRecycleBin)
+        {
+            result = "OK";
+            _lastErrorMessage = null;
+        }
+        else
+        {
+            try
+            {
+                if (isDir)
+                    Directory.Delete(fullPath, recursive: true);
+                else
+                    File.Delete(fullPath);
+                result = "OK";
+                _lastErrorMessage = null;
+            }
+            catch (Exception ex)
+            {
+                result = "FAIL";
+                message = ex.Message;
+                _lastErrorMessage = $"削除失敗: {ex.Message}";
+            }
+        }
+
+        OperationLog.Append(new OpLogEntry(DateTime.UtcNow, null, opName, result, fullPath, "", message));
+
+        await RefreshCurrentAsync(pane);
     }
 
     static async Task EnterAsync(Pane pane)
