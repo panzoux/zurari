@@ -2472,6 +2472,8 @@ static class Program
                     await ShowContextMenuAsync(pane);
                 else if (key.KeyChar == 'd' && key.Modifiers == ConsoleModifiers.None)
                     RequestDeleteSelected(pane);
+                else if (key.KeyChar == 'r' && key.Modifiers == ConsoleModifiers.None)
+                    RequestRenameSelected(pane);
                 break;
         }
     }
@@ -3000,6 +3002,69 @@ static class Program
         OperationLog.Append(new OpLogEntry(DateTime.UtcNow, null, opName, result, fullPath, "", message));
 
         await RefreshCurrentAsync(pane);
+    }
+
+    static void RequestRenameSelected(Pane pane)
+    {
+        if (!SelectedIsDeletable(pane, out Column col, out string name))
+            return;
+
+        bool isDir = name.EndsWith("/");
+        string currentName = isDir ? name.TrimEnd('/') : name;
+
+        ShowTextInput(
+            "リネーム",
+            currentName,
+            async newNameResult =>
+            {
+                if (newNameResult == null) return;
+                string newName = newNameResult.Trim();
+                if (newName.Length == 0 || newName == currentName) return;
+                await ExecuteRenameAsync(pane, col, name, currentName, newName, isDir);
+            });
+    }
+
+    static async Task ExecuteRenameAsync(Pane pane, Column col, string originalEntry, string currentName, string newName, bool isDir)
+    {
+        string oldFullPath = Path.Combine(col.Path, currentName);
+        string newFullPath = Path.Combine(col.Path, newName);
+        string result;
+        string message = "";
+
+        try
+        {
+            if (isDir)
+                Directory.Move(oldFullPath, newFullPath);
+            else
+                File.Move(oldFullPath, newFullPath);
+            result = "OK";
+            _lastErrorMessage = null;
+        }
+        catch (Exception ex)
+        {
+            result = "FAIL";
+            message = ex.Message;
+            _lastErrorMessage = $"リネーム失敗: {ex.Message}";
+        }
+
+        OperationLog.Append(new OpLogEntry(DateTime.UtcNow, null, "RENAME", result, oldFullPath, newFullPath, message));
+
+        if (result == "OK")
+        {
+            // RefreshCurrentAsync replaces pane.Columns[pane.ActiveColumn] with a brand-new
+            // Column instance, so setting col.RestoreTo on the pre-rename Column would not
+            // propagate. Build the refreshed column directly and set RestoreTo on it instead.
+            Column refreshed = await CreateColumnAsync(col.Path, CancellationToken.None);
+            if (refreshed.LoadingTask != null) await refreshed.LoadingTask;
+            refreshed.RestoreTo = isDir ? newName + "/" : newName;
+            SeekRestoreTo(refreshed);
+            pane.Columns[pane.ActiveColumn] = refreshed;
+            await RebuildRightSideAsync(pane, pane.ActiveColumn);
+        }
+        else
+        {
+            await RefreshCurrentAsync(pane);
+        }
     }
 
     static async Task EnterAsync(Pane pane)
