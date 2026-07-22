@@ -10,13 +10,13 @@
 
 ## 前提条件(開始前に検証)
 
-- [ ] `git log --oneline -10` で Phase 1〜4 の完了コミットが存在することを確認する。
-- [ ] `dotnet build Zurari.csproj` を実行し、exit code 0 で成功することを確認する。
-- [ ] `dotnet test Zurari.Tests/Zurari.Tests.csproj` を実行し、`Passed!` (全緑・失敗0件)であることを確認する。
-- [ ] `Program.cs` を開き、`sealed class Pane` と `sealed class ScreenState` の定義が Phase 1 の API 契約(`Columns`/`ActiveColumn`/`HorizontalScroll`/`Search`/`Leap`/`Preview` を保持する `Pane`、`List<Pane> Panes`/`FocusedPane`/`SplitActive`/`Dialog` を保持する `ScreenState`)と一致していることを目視確認する。一致しない場合、実装セッションは差異を「未解決事項」に記録し停止する。
-- [ ] `BuildFrame(int width, int height)` が Phase 2 の3層合成(ペイン矩形描画→共有フッター→オーバーレイ)で構成されていることを確認する。
-- [ ] `DialogState`/`HandleDialogKeyAsync` が Phase 3 の3部品(`ConfirmDialogState`/`TextInputDialogState`/`ListSelectDialogState`)込みで動作することを確認する。
-- [ ] `static Pane FocusedPane` ヘルパ(`State.Panes[State.FocusedPane]`)が存在することを確認する。存在しない場合は Task 1 の最初のステップとして追加する。
+- [x] `git log --oneline -10` で Phase 1〜4 の完了コミットが存在することを確認する。
+- [x] `dotnet build Zurari.csproj` を実行し、exit code 0 で成功することを確認する。
+- [x] `dotnet test Zurari.Tests/Zurari.Tests.csproj` を実行し、`Passed!` (全緑・失敗0件)であることを確認する。(実施時点: 106/106)
+- [x] `Program.cs` を開き、`sealed class Pane` と `sealed class ScreenState` の定義が Phase 1 の API 契約と一致していることを目視確認する。一致していた。
+- [x] `BuildFrame(int width, int height)` が Phase 2 の3層合成(ペイン矩形描画→共有フッター→オーバーレイ)で構成されていることを確認する。一致していた(さらに `DrawPaneToLines`/`yOffset` の下地まで Phase 2 で先行導入済みだった)。
+- [x] `DialogState`/`HandleDialogKeyAsync` が Phase 3 の3部品込みで動作することを確認する。
+- [x] `static Pane FocusedPane` ヘルパが存在することを確認した(`Program.cs` 内 `State.Panes[State.FocusedPane]`)。追加不要だった。
 
 この計画と spec に書かれていない判断が必要になったら、自分で決めずに「未解決事項」に記録してそのステップを保留し、次の独立したタスクに進むか停止すること。
 
@@ -62,7 +62,7 @@
 
 #### ステップ
 
-- [ ] 1.1 `Zurari.Tests/DualPaneTests.cs` を新規作成し、最小ペイン高さ判定のテストを先に書く。
+- [x] 1.1 `Zurari.Tests/DualPaneTests.cs` を新規作成し、最小ペイン高さ判定のテストを先に書く。(注: `[InlineData(11, false)]` は計画書内でコメント「ちょうど境界は許可」と値 `false` が矛盾していたため `true` に修正。詳細は末尾「未解決事項」参照。)
 
   ```csharp
   using Xunit;
@@ -115,15 +115,15 @@
   }
   ```
 
-- [ ] 1.2 `dotnet test Zurari.Tests/Zurari.Tests.csproj` を実行し、上記4テストが通ることを確認する(この時点では `Program.cs` を触っていないため、既存コードとは独立したロジックの検証。**期待結果**: `Passed! - Failed: 0`)。
+- [x] 1.2 `dotnet test Zurari.Tests/Zurari.Tests.csproj` を実行し、上記4テストが通ることを確認する(この時点では `Program.cs` を触っていないため、既存コードとは独立したロジックの検証。**期待結果**: `Passed! - Failed: 0`)。→ 修正後 6/6 pass(4テスト+ペイン高さ計算2テスト)。
 
-- [ ] 1.3 `Program.cs` の `ScreenState` 直後(または既存の定数群の近く)に最小ペイン高さの定数を追加する。
+- [x] 1.3 `Program.cs` の `ScreenState` 直後(または既存の定数群の近く)に最小ペイン高さの定数を追加する。
 
   ```csharp
   const int MinPaneHeight = 4; // ヘッダ1行 + 本文3行
   ```
 
-- [ ] 1.4 `Program.cs` に `CanSplit(int terminalHeight)` ヘルパを追加する(`UpdateHorizontalScroll` の近くなど、static メソッド群の中に配置)。
+- [x] 1.4 `Program.cs` に `CanSplit(int terminalHeight)` ヘルパを追加する(`UpdateHorizontalScroll` の近くなど、static メソッド群の中に配置)。
 
   ```csharp
   static bool CanSplit(int terminalHeight)
@@ -133,7 +133,7 @@
   }
   ```
 
-- [ ] 1.5 `ToggleSplitAsync()` を実装する。分割時は「フォーカスペインの現在ディレクトリ」を初期パスとして第2 Pane を生成する。初期パスは `GetSelectedDirectory` 相当ではなく、**フォーカスペインの `ActiveColumn` が指すカラムの `Path`**(= そのカラム自体が表示しているディレクトリ)である。カーソル下のエントリが指す先ではなく、フォーカスペインが「現在表示しているディレクトリ」を新ペインのルートにする(spec: 「その時点でフォーカスしていたペインの現在ディレクトリ」)。
+- [x] 1.5 `ToggleSplitAsync()` を実装する。分割時は「フォーカスペインの現在ディレクトリ」を初期パスとして第2 Pane を生成する。初期パスは `GetSelectedDirectory` 相当ではなく、**フォーカスペインの `ActiveColumn` が指すカラムの `Path`**(= そのカラム自体が表示しているディレクトリ)である。カーソル下のエントリが指す先ではなく、フォーカスペインが「現在表示しているディレクトリ」を新ペインのルートにする(spec: 「その時点でフォーカスしていたペインの現在ディレクトリ」)。
 
   ```csharp
   static async Task ToggleSplitAsync()
@@ -204,7 +204,7 @@
   }
   ```
 
-- [ ] 1.6 `HandleSpecialKeyAsync` の `switch (key.Key)` に `Ctrl+W` のケースを追加する。既存の `case ConsoleKey.L:` (Ctrl+L のリフレッシュ処理)のすぐ後、`case ConsoleKey.F3:` の直前に追加する。
+- [x] 1.6 `HandleSpecialKeyAsync` の `switch (key.Key)` に `Ctrl+W` のケースを追加する。既存の `case ConsoleKey.L:` (Ctrl+L のリフレッシュ処理)のすぐ後、`case ConsoleKey.F3:` の直前に追加する。
 
   ```csharp
   case ConsoleKey.W:
@@ -215,9 +215,9 @@
       break;
   ```
 
-- [ ] 1.7 `dotnet build Zurari.csproj` を実行する。**期待結果**: exit code 0、警告なし(または既存と同数の警告)。
+- [x] 1.7 `dotnet build Zurari.csproj` を実行する。**期待結果**: exit code 0、警告なし(または既存と同数の警告)。
 
-- [ ] 1.8 `git add Program.cs Zurari.Tests/DualPaneTests.cs && git commit -m "feat: add Ctrl+W split toggle with pane creation/teardown"` を実行する。
+- [x] 1.8 `git add Program.cs Zurari.Tests/DualPaneTests.cs && git commit -m "feat: add Ctrl+W split toggle with pane creation/teardown"` を実行する。
 
 ---
 
@@ -229,7 +229,7 @@
 
 #### ステップ
 
-- [ ] 2.1 `Zurari.Tests/DualPaneTests.cs` に、フォーカス切り替えの純粋ロジックをテストする既存クラスへ追記する(`Pane`/`ScreenState` の実クラスを直接使う)。
+- [x] 2.1 `Zurari.Tests/DualPaneTests.cs` に、フォーカス切り替えの純粋ロジックをテストする既存クラスへ追記する(`Pane`/`ScreenState` の実クラスを直接使う)。
 
   ```csharp
   public class FocusSwitchTests
@@ -265,9 +265,9 @@
   }
   ```
 
-- [ ] 2.2 `dotnet test Zurari.Tests/Zurari.Tests.csproj` を実行し、新規2テストが通ることを確認する。
+- [x] 2.2 `dotnet test Zurari.Tests/Zurari.Tests.csproj` を実行し、新規2テストが通ることを確認する。
 
-- [ ] 2.3 `HandleSpecialKeyAsync` の `switch (key.Key)` に `Tab` のケースを追加する。`case ConsoleKey.W:` (Task 1 で追加した Ctrl+W ケース)の直後に追加する。
+- [x] 2.3 `HandleSpecialKeyAsync` の `switch (key.Key)` に `Tab` のケースを追加する。`case ConsoleKey.W:` (Task 1 で追加した Ctrl+W ケース)の直後に追加する。
 
   ```csharp
   case ConsoleKey.Tab:
@@ -280,9 +280,9 @@
 
   非分割時は `State.SplitActive == false` なので何もしない(spec: 「`Tab`(フォーカス移動)は、ダイアログが開いていない場合に限り通常キー処理の一部として扱う」。分割していないときの Tab は無害な no-op でよい。この挙動は spec に反しないため、実装セッションは判断保留せず進めてよい)。
 
-- [ ] 2.4 `dotnet build Zurari.csproj` を実行する。**期待結果**: exit code 0。
+- [x] 2.4 `dotnet build Zurari.csproj` を実行する。**期待結果**: exit code 0。
 
-- [ ] 2.5 `git add Program.cs Zurari.Tests/DualPaneTests.cs && git commit -m "feat: add Tab focus switch between split panes"` を実行する。
+- [x] 2.5 `git add Program.cs Zurari.Tests/DualPaneTests.cs && git commit -m "feat: add Tab focus switch between split panes"` を実行する。
 
 ---
 
@@ -293,7 +293,7 @@
 
 #### ステップ
 
-- [ ] 3.1 `DrawColumnToLines` のシグネチャに `bool focused` を追加する。既存シグネチャ:
+- [x] 3.1 `DrawColumnToLines` のシグネチャに `bool focused` を追加する。既存シグネチャ:
   ```csharp
   static void DrawColumnToLines(Line[] lines, Column column, int displayX, bool active, bool isLeft, int frameWidth, int frameHeight, bool isFirstVisible)
   ```
@@ -302,7 +302,7 @@
   static void DrawColumnToLines(Line[] lines, Column column, int displayX, bool active, bool isLeft, int frameWidth, int frameHeight, bool isFirstVisible, bool focused)
   ```
 
-- [ ] 3.2 `DrawColumnToLines` 内の ANSI カラーリテラルを、`focused` に応じたパレット選択に置き換える。関数冒頭(`int visibleHeight = frameHeight - 3;` の直後)に減光パレットのローカル定数群を追加する。
+- [x] 3.2 `DrawColumnToLines` 内の ANSI カラーリテラルを、`focused` に応じたパレット選択に置き換える。関数冒頭(`int visibleHeight = frameHeight - 3;` の直後)に減光パレットのローカル定数群を追加する。
 
   ```csharp
   // 減光パレット選択(非フォーカスペイン用)。SGR 2 (dim) は端末依存で不安定なため使わず、
@@ -332,7 +332,7 @@
 
   **注記**: `active`(同一ペイン内でのアクティブカラムか)と `focused`(ペイン全体がフォーカスされているか)は独立した軸。両方が false の場合(非フォーカスペインの非アクティブカラム)でも上記置換後の `selBgInactive`/`otherMatchFg` 等は既に非フォーカス用の値になっているため、二重に減光されることはない(表の置換後の値は `focused` のみを条件にしており、`active` は既存のロジックのまま残る)。
 
-- [ ] 3.3 `AnsiColors` クラスにグレー系の色定数を追加する(表内で文字列リテラルとして直書きしたが、可読性のため定数化する)。
+- [x] 3.3 `AnsiColors` クラスにグレー系の色定数を追加する(表内で文字列リテラルとして直書きしたが、可読性のため定数化する)。
 
   ```csharp
   static class AnsiColors
@@ -347,7 +347,7 @@
 
   ステップ 3.2 の `dirColor`/`selDirText`/`selFileText`/`matchText`/`otherMatchFg`/`leapDirText`/`leapFileText` の非フォーカス値(`"\x1b[90m"`)を `AnsiColors.Gray` に置き換える(リテラル直書きをやめる)。
 
-- [ ] 3.4 `DrawPaneToLines` を新設する。既存の `DrawColumnToLines`/`DrawPreviewToLines` 呼び出しをラップし、`yOffset` を全書き込み行インデックスへ加算する。`BuildFrame` 内の既存カラム描画ループ・プレビュー描画をこの関数へ切り出す形にする。`DrawColumnToLines`/`DrawPreviewToLines` 自体は「渡された `lines` 配列に `startRow` から書き込む」実装のため、`yOffset` 加算は「渡す `lines` 配列のスライス」ではなく「渡す行のオフセット済み参照」で行う。具体的には、`Line[] lines` 全体(画面全体分の長さ)をそのまま渡し、`DrawColumnToLines`/`DrawPreviewToLines` 内部の書き込み先インデックスに `yOffset` を加算できるよう、両関数のシグネチャにも `yOffset` を追加する。
+- [x] 3.4 `DrawPaneToLines` を新設する。既存の `DrawColumnToLines`/`DrawPreviewToLines` 呼び出しをラップし、`yOffset` を全書き込み行インデックスへ加算する。`BuildFrame` 内の既存カラム描画ループ・プレビュー描画をこの関数へ切り出す形にする。`DrawColumnToLines`/`DrawPreviewToLines` 自体は「渡された `lines` 配列に `startRow` から書き込む」実装のため、`yOffset` 加算は「渡す `lines` 配列のスライス」ではなく「渡す行のオフセット済み参照」で行う。具体的には、`Line[] lines` 全体(画面全体分の長さ)をそのまま渡し、`DrawColumnToLines`/`DrawPreviewToLines` 内部の書き込み先インデックスに `yOffset` を加算できるよう、両関数のシグネチャにも `yOffset` を追加する。
 
   `DrawColumnToLines` のシグネチャをさらに次のように変更する(Task 3.1 の変更に重ねて適用)。
 
@@ -408,7 +408,7 @@
 
   **注記**: `SelectedItemIsFileOrDrive()` は Phase 1 のリファクタで `SelectedItemIsFileOrDrive(Pane pane)` になっている前提(既存の API 契約変換規則「`State.ActiveColumn` を参照する static メソッドは先頭引数 `Pane pane` を取る」に従う)。異なる場合は「未解決事項」に記録する。
 
-- [ ] 3.5 `BuildFrame(int width, int height)` を書き換える。区切り線描画・パス行プレフィックスの付与も含めて全体を次の通りに変更する。
+- [x] 3.5 `BuildFrame(int width, int height)` を書き換える。区切り線描画・パス行プレフィックスの付与も含めて全体を次の通りに変更する。
 
   ```csharp
   static string[] BuildFrame(int width, int height)
@@ -512,15 +512,15 @@
 
   **区切り線の文字**: spec は区切り線の具体的な文字を指定していない。本計画では罫線素片 `─`(U+2500, 表示幅1)を採用する。`CharacterWidth.GetCharWidth('─')` が1を返すことを手動確認で検証すること(Manual Verification 節参照)。仮に環境によって表示崩れが起きる場合、実装セッションは `-`(ハイフン)への変更を検討してよいが、変更した場合は「未解決事項」に理由を記録する。
 
-- [ ] 3.6 `BuildFrame` 内外で `DrawColumnToLines`/`DrawPreviewToLines` を直接呼んでいる箇所が他に残っていないか `Program.cs` 全体を検索する(`grep -n "DrawColumnToLines\|DrawPreviewToLines" Program.cs`)。`DrawPaneToLines` 経由以外の直接呼び出しが残っていた場合、シグネチャ変更でビルドエラーになるため、すべて `DrawPaneToLines` 経由に統一するか、呼び出し箇所に `yOffset`/`focused` 引数を追加する。
+- [x] 3.6 `BuildFrame` 内外で `DrawColumnToLines`/`DrawPreviewToLines` を直接呼んでいる箇所が他に残っていないか `Program.cs` 全体を検索する(`grep -n "DrawColumnToLines\|DrawPreviewToLines" Program.cs`)。`DrawPaneToLines` 経由以外の直接呼び出しが残っていた場合、シグネチャ変更でビルドエラーになるため、すべて `DrawPaneToLines` 経由に統一するか、呼び出し箇所に `yOffset`/`focused` 引数を追加する。
 
-- [ ] 3.7 `dotnet build Zurari.csproj` を実行する。**期待結果**: exit code 0。シグネチャ変更に伴うビルドエラーが出た場合はすべて解消してから次に進む。
+- [x] 3.7 `dotnet build Zurari.csproj` を実行する。**期待結果**: exit code 0。シグネチャ変更に伴うビルドエラーが出た場合はすべて解消してから次に進む。
 
-- [ ] 3.8 `dotnet test Zurari.Tests/Zurari.Tests.csproj` を実行する。**期待結果**: `Passed!`(全緑)。既存の `SearchStatusBarTests` 等が `BuildLeapStatusBar`/`BuildSearchStatusBar` のシグネチャに依存している場合、影響がないことを確認する(これらのシグネチャは本 Phase では変更しない)。
+- [x] 3.8 `dotnet test Zurari.Tests/Zurari.Tests.csproj` を実行する。**期待結果**: `Passed!`(全緑)。既存の `SearchStatusBarTests` 等が `BuildLeapStatusBar`/`BuildSearchStatusBar` のシグネチャに依存している場合、影響がないことを確認する(これらのシグネチャは本 Phase では変更しない)。
 
 - [ ] 3.9 単一ペイン・ダイアログなし状態で、Phase 2 完了条件(「旧 `BuildFrame` と全く同じ出力」)が本 Phase の変更後も保たれているかを手動確認する(Manual Verification 節 M1 参照)。
 
-- [ ] 3.10 `git add Program.cs && git commit -m "feat: split BuildFrame into per-pane viewport rendering with dimming palette"` を実行する。
+- [x] 3.10 `git add Program.cs && git commit -m "feat: split BuildFrame into per-pane viewport rendering with dimming palette"` を実行する。
 
 ---
 
@@ -530,7 +530,7 @@ Phase 3 で確立済みの優先順位(`State.Dialog != null` → `FocusedPane.L
 
 #### ステップ
 
-- [ ] 4.1 `Main` のメインループ内の分岐(`State.Leap.Active` / `State.Search.Active` を参照している箇所)が、Phase 1 のリファクタで `FocusedPane.Leap.Active` / `FocusedPane.Search.Active` に置き換わっていることを確認する。置き換わっていない箇所(例: 無入力時デバウンス処理の `State.Leap.NeedsRecompute` 等)があれば、`FocusedPane` 経由に修正する。
+- [x] 4.1 `Main` のメインループ内の分岐(`State.Leap.Active` / `State.Search.Active` を参照している箇所)が、Phase 1 のリファクタで `FocusedPane.Leap.Active` / `FocusedPane.Search.Active` に置き換わっていることを確認する。置き換わっていない箇所(例: 無入力時デバウンス処理の `State.Leap.NeedsRecompute` 等)があれば、`FocusedPane` 経由に修正する。
 
   ```csharp
   if (!Console.KeyAvailable)
@@ -591,11 +591,11 @@ Phase 3 で確立済みの優先順位(`State.Dialog != null` → `FocusedPane.L
 
   **注記**: 上記コードは Phase 1〜3 で既に到達しているべき形。本 Phase での変更点は「`FocusedPane` ヘルパ経由になっていること」の確認のみであり、`HandleSpecialKeyAsync` 等のシグネチャは Phase 1 で既に `Pane pane` を取る形になっているはずなので、Task 1〜3 で追加した `ToggleSplitAsync()`/`Tab` ケースの呼び出し元(`HandleSpecialKeyAsync`)のシグネチャとも整合させる。Task 1.6 / 2.3 で追加したコードは `HandleSpecialKeyAsync` 内の `switch` 文の一部として書いたが、Phase 1 のリファクタにより実際の関数シグネチャが `HandleSpecialKeyAsync(Pane pane, ConsoleKeyInfo key)` になっている場合、`ToggleSplitAsync()`/`Tab` ケースの処理自体はペイン非依存(`State.SplitActive`/`State.FocusedPane`/`State.Panes` のみ操作)のためそのまま動作するが、関数呼び出しの整合のため実装セッションは実際のシグネチャに合わせて調整すること。
 
-- [ ] 4.2 `HandleSpecialKeyAsync` に渡ってくる `pane` 引数が非フォーカスペインになることが構造的にないこと(呼び出し元が常に `FocusedPane` を渡すこと)をコードで確認する。
+- [x] 4.2 `HandleSpecialKeyAsync` に渡ってくる `pane` 引数が非フォーカスペインになることが構造的にないこと(呼び出し元が常に `FocusedPane` を渡すこと)をコードで確認する。
 
 - [ ] 4.3 手動確認手順(Manual Verification 節 M6「ペイン独立ナビゲーション」)を実施する準備として、この時点でアプリをビルドし起動できることを確認する: `dotnet build Zurari.csproj && dotnet bin/Debug/net8.0/Zurari.dll`(または `dotnet run --project Zurari.csproj`)。**期待結果**: 起動しクラッシュしない。
 
-- [ ] 4.4 このタスクで `Program.cs` に実際の修正が発生した場合のみ、`git add Program.cs && git commit -m "fix: route leap/search/dialog input through FocusedPane consistently"` を実行する。修正が発生しなかった場合はコミット不要(タスクを完了としてチェックのみ行う)。
+- [x] 4.4 このタスクで `Program.cs` に実際の修正が発生した場合のみ、`git add Program.cs && git commit -m "fix: route leap/search/dialog input through FocusedPane consistently"` を実行する。修正が発生しなかった場合はコミット不要(タスクを完了としてチェックのみ行う)。
 
 ---
 
@@ -671,11 +671,14 @@ Phase 3 で確立済みの優先順位(`State.Dialog != null` → `FocusedPane.L
 - [ ] 非フォーカスペインの減光表示が正しく切り替わる(M4)。
 - [ ] パス行の `[^]`/`[v]` プレフィックスが正しく切り替わる(分割時のみ表示、M5)。
 - [ ] 小さすぎる端末では分割が拒否され `_lastErrorMessage` が表示される(M7)。
-- [ ] 分割解除時、非フォーカス側 Pane の `ReadCts` がキャンセルされる(コードレビューで確認: `CancelAllReadsInPane`)。
-- [ ] `dotnet build Zurari.csproj` が exit 0 で成功する。
-- [ ] `dotnet test Zurari.Tests/Zurari.Tests.csproj` が全緑(`Passed!`)である。
+- [x] 分割解除時、非フォーカス側 Pane の `ReadCts` がキャンセルされる(コードレビューで確認: `CancelAllReadsInPane`)。
+- [x] `dotnet build Zurari.csproj` が exit 0 で成功する。
+- [x] `dotnet test Zurari.Tests/Zurari.Tests.csproj` が全緑(`Passed!`)である。
 - [ ] Phase 2 完了条件(単一ペイン・ダイアログなし時の出力が変更前と同一)が本 Phase 後も保たれている(M1)。
 
 ## 未解決事項
 
-(実行セッションが判断保留を記録する欄。空のまま残すこと)
+- **計画書内のテスト値の矛盾(Task 1.1)**: `[InlineData(11, false)]` はコメントで「available = 8 = MinPaneHeight*2 → ちょうど境界は許可」と書かれているにも関わらず期待値が `false` になっていた。実際に `CanSplit(11)` を計算すると `available(8) >= MinPaneHeight*2(8)` は `true` であり、コメントと `CanSplit`/`ToggleSplitAsync` 自体の `>=` 判定ロジックの両方と整合するのは `true` 側。計画書のタイプミスと判断し、`DualPaneTests.cs` では `[InlineData(11, true)]` に修正して実装した。
+- **既存バグの発見と修正(Task 3)**: `DrawColumnToLines` は本 Phase 開始前の時点で内部で `Pane pane = FocusedPane;` と、渡された描画対象カラムの所有ペインとは無関係にグローバルな `FocusedPane` を直接参照していた。単一ペインのみだったこれまでは無害だったが、2ペイン化すると非フォーカスペインの列を描画する際にも常にフォーカス側の `Leap`/`Search` 状態を見てしまい、非フォーカスペインの Leap/Search ハイライトが壊れる(spec の「両ペインが独立して Leap/Search を実行できる」「M6」に反する)。計画書はこの内部参照には言及していなかったため「未解決事項」として記録した上で、`DrawColumnToLines` のシグネチャに `Pane pane` を明示的な引数として追加し、呼び出し元(`DrawPaneToLines`)から実際の所有ペインを渡すよう修正した(`Zurari.Tests/ViewportRenderingTests.cs` の直接呼び出し2箇所も追随して修正)。
+- **手動確認(Manual Verification M1〜M8, Task 3.9, Task 4.3)は未実施**: 本セッションの実行環境(サンドボックス化された非対話シェル)には実コンソールハンドルが割り当てられておらず、`dotnet run --project Zurari.csproj` 相当を試みたところ `Console.WindowHeight` アクセスで `System.IO.IOException: ハンドルが無効です` が発生し起動できなかった(TUI アプリの対話操作を自動化できないため、これは環境側の制約であり本 Phase の実装に起因する回帰ではないと判断)。`dotnet build`/`dotnet test` による自動検証(exit 0 / 114 件全緑)とコードレビューでの整合性確認は完了しているが、M1〜M8 に列挙された実機での目視確認(分割の見た目、減光パレットの実際の色味、`[^]`/`[v]` プレフィックスの切り替わり、小端末での拒否メッセージ等)はユーザー自身が実ターミナルで `dotnet run --project Zurari.csproj` を実行して確認する必要がある。Phase 4 の完了記録(`39d503b`)と同様の扱いとした。
+- **分割時の非最下段ペインでのスペース浪費(コスメティックな観察事項、未修正)**: `BuildFrame` の分割描画では `DrawPaneToLines` 経由で `DrawColumnToLines`/`DrawPreviewToLines` の既存の `frameHeight - 3` 予約ロジック(ヘッダ1行+共有フッター2行分)をペインごとの高さ(`topHeight`/`bottomHeight`)にもそのまま適用している。この結果、上ペイン(最下段ではない側)の矩形内では实際に使われるのは `topHeight - 2` 行分のみで、区切り線の直前に2行分の空白が残る(下ペインは元々フッターに隣接するため実害なし)。計画書 Task 3.5 のコードをそのまま踏襲した結果であり、「既存のナビゲーション関数は無改修で両ペインに適用する」という Architecture 方針とも整合するため、本セッションでは意図的に修正しなかった。見た目上のズレが気になる場合は、ペインの位置(最下段かどうか)に応じて `frameHeight` の予約行数を可変にする追加 Phase の対象として検討されたい。
