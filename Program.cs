@@ -2119,6 +2119,7 @@ static class Program
     const int CacheExpireMs = 2000;
     const int MaxPathLength = 100;
     const int NavigationDebounceMs = 300;
+    const int MinPaneHeight = 4; // ヘッダ1行 + 本文3行
 
     internal static readonly ScreenState State = new ScreenState();
     static Pane FocusedPane => State.Panes[State.FocusedPane];
@@ -2456,6 +2457,13 @@ static class Program
             case ConsoleKey.L:
                 if ((key.Modifiers & ConsoleModifiers.Control) != 0)
                     RefreshCurrent(pane);
+                break;
+
+            case ConsoleKey.W:
+                if ((key.Modifiers & ConsoleModifiers.Control) != 0)
+                {
+                    await ToggleSplitAsync();
+                }
                 break;
 
             case ConsoleKey.F3:
@@ -2990,6 +2998,12 @@ static class Program
                 if (pane.Preview.IsVisible) StartPreviewLoad(pane);
             }
         }
+    }
+
+    static bool CanSplit(int terminalHeight)
+    {
+        int available = terminalHeight - 2 /* footer rows */ - 1 /* separator row */;
+        return available >= MinPaneHeight * 2;
     }
 
     static void UpdateHorizontalScroll(Pane pane)
@@ -4187,6 +4201,60 @@ static class Program
 
         // Recalculate scroll now that the right-side column count is final.
         UpdateHorizontalScroll(pane);
+    }
+
+    static async Task ToggleSplitAsync()
+    {
+        if (!State.SplitActive)
+        {
+            if (!CanSplit(Console.WindowHeight))
+            {
+                _lastErrorMessage = "[terminal too small to split]";
+                return;
+            }
+
+            Pane source = FocusedPane;
+            string initialPath = source.Columns[source.ActiveColumn].Path;
+
+            Pane newPane = new Pane();
+            newPane.Columns.Add(CreateColumn(initialPath));
+            await RebuildRightSideAsync(newPane, 0);
+
+            State.Panes.Add(newPane);
+            State.SplitActive = true;
+            // フォーカスは元々見ていたペイン(常に State.Panes[0])のまま据え置く。
+            // ユーザーは Ctrl+W 直後にそのまま同じペインを操作継続できる。
+            State.FocusedPane = 0;
+        }
+        else
+        {
+            // 非フォーカス側 Pane を破棄する。フォーカス側だけを残す。
+            int keepIndex = State.FocusedPane;
+            int discardIndex = keepIndex == 0 ? 1 : 0;
+
+            Pane discarded = State.Panes[discardIndex];
+            CancelAllReadsInPane(discarded);
+
+            Pane kept = State.Panes[keepIndex];
+            State.Panes.Clear();
+            State.Panes.Add(kept);
+            State.FocusedPane = 0;
+            State.SplitActive = false;
+        }
+
+        State.PrevFrame = null; // レイアウトが変わるため強制フル再描画
+        UpdateHorizontalScroll(FocusedPane);
+    }
+
+    static void CancelAllReadsInPane(Pane pane)
+    {
+        // 破棄される Pane 配下の全カラムで非同期読み込み中の ReadCts をキャンセルし、
+        // 再訪時に同じカーソル位置へ復元できるよう SaveCursorMemory も呼ぶ。
+        foreach (Column col in pane.Columns)
+        {
+            col.ReadCts?.Cancel();
+            SaveCursorMemory(col);
+        }
     }
 
     static async Task JumpToPathAsync(Pane pane, string path)
