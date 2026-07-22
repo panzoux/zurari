@@ -35,13 +35,13 @@ public class ViewportRenderingTests
 
         Column baseline = MakeColumn(5, selected: 2);
         Line[] baselineLines = NewLines(frameHeight);
-        Program.DrawColumnToLines(baselineLines, baseline, 0, active: false, isLeft: false,
-            frameWidth: columnWidth, frameHeight: frameHeight, isFirstVisible: true, yOffset: 0);
+        Program.DrawColumnToLines(baselineLines, Program.State.Panes[0], baseline, 0, active: false, isLeft: false,
+            frameWidth: columnWidth, frameHeight: frameHeight, isFirstVisible: true, focused: true, yOffset: 0);
 
         Column shifted = MakeColumn(5, selected: 2);
         Line[] shiftedLines = NewLines(frameHeight);
-        Program.DrawColumnToLines(shiftedLines, shifted, 0, active: false, isLeft: false,
-            frameWidth: columnWidth, frameHeight: frameHeight, isFirstVisible: true, yOffset: 0);
+        Program.DrawColumnToLines(shiftedLines, Program.State.Panes[0], shifted, 0, active: false, isLeft: false,
+            frameWidth: columnWidth, frameHeight: frameHeight, isFirstVisible: true, focused: true, yOffset: 0);
 
         for (int i = 0; i < frameHeight; i++)
             Assert.Equal(baselineLines[i].Render(columnWidth), shiftedLines[i].Render(columnWidth));
@@ -58,13 +58,13 @@ public class ViewportRenderingTests
 
         Column a = MakeColumn(4, selected: 1);
         Line[] zeroOffsetLines = NewLines(frameHeight);
-        Program.DrawColumnToLines(zeroOffsetLines, a, 0, active: true, isLeft: false,
-            frameWidth: columnWidth, frameHeight: frameHeight, isFirstVisible: true, yOffset: 0);
+        Program.DrawColumnToLines(zeroOffsetLines, Program.State.Panes[0], a, 0, active: true, isLeft: false,
+            frameWidth: columnWidth, frameHeight: frameHeight, isFirstVisible: true, focused: true, yOffset: 0);
 
         Column b = MakeColumn(4, selected: 1);
         Line[] shiftedLines = NewLines(totalHeight);
-        Program.DrawColumnToLines(shiftedLines, b, 0, active: true, isLeft: false,
-            frameWidth: columnWidth, frameHeight: frameHeight, isFirstVisible: true, yOffset: yOffset);
+        Program.DrawColumnToLines(shiftedLines, Program.State.Panes[0], b, 0, active: true, isLeft: false,
+            frameWidth: columnWidth, frameHeight: frameHeight, isFirstVisible: true, focused: true, yOffset: yOffset);
 
         for (int i = 0; i < frameHeight; i++)
             Assert.Equal(zeroOffsetLines[i].Render(columnWidth), shiftedLines[yOffset + i].Render(columnWidth));

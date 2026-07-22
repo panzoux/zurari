@@ -230,6 +230,7 @@ static class AnsiColors
 {
     public const string Blue   = "\x1b[94m";
     public const string Yellow = "\x1b[33m";
+    public const string Gray   = "\x1b[90m";   // 減光: ディレクトリ・選択文字・マッチ文字用
     public const string Reset  = "\x1b[0m";
     public static string Colorize(string text, string color) => color + text + Reset;
 }
@@ -4566,16 +4567,31 @@ static class Program
             lines[i] = new Line();
 
         // --- Layer 1: pane-rect drawing ---
-        // Single pane fixed for this phase (Panes.Count == 1, SplitActive == false).
-        // yOffset=0, focused=true fixed. DrawPaneToLines's `height` parameter conceptually
-        // represents "the pane's assigned rectangle height"; in this single-pane phase that
-        // rectangle still spans the full screen height, matching what the pre-refactor code
-        // implicitly passed as frameHeight to DrawColumnToLines/DrawPreviewToLines. Passing
-        // `height` here (not height-2) preserves the original visibleHeight = frameHeight - 3
-        // math exactly, keeping output byte-identical. A future phase that actually shrinks
-        // per-pane height for multi-pane layouts will need to also revisit the 3-row
-        // reservation math inside DrawColumnToLines/DrawPreviewToLines (out of scope here).
-        DrawPaneToLines(lines, pane, 0, height, true, width);
+        if (!State.SplitActive)
+        {
+            // yOffset=0, focused=true fixed. DrawPaneToLines's `height` parameter conceptually
+            // represents "the pane's assigned rectangle height"; in this single-pane phase that
+            // rectangle still spans the full screen height, matching what the pre-refactor code
+            // implicitly passed as frameHeight to DrawColumnToLines/DrawPreviewToLines. Passing
+            // `height` here (not height-2) preserves the original visibleHeight = frameHeight - 3
+            // math exactly, keeping output byte-identical.
+            DrawPaneToLines(lines, pane, 0, height, true, width);
+        }
+        else
+        {
+            int available = height - 2 - 1; // フッター2行・区切り線1行を除いた残り
+            int topHeight = available / 2;
+            int bottomHeight = available - topHeight; // 端数は下ペインへ
+            int separatorRow = topHeight;
+            int bottomOffset = topHeight + 1;
+
+            DrawPaneToLines(lines, State.Panes[0], 0, topHeight, State.FocusedPane == 0, width);
+
+            string sep = new string('─', width);
+            lines[separatorRow].AddColumn(sep, width, width);
+
+            DrawPaneToLines(lines, State.Panes[1], bottomOffset, bottomHeight, State.FocusedPane == 1, width);
+        }
 
         // Render each line to string and pad to window width
         for (int i = 0; i < height - 2; i++)
@@ -4584,8 +4600,13 @@ static class Program
         }
 
         // --- Layer 2: shared footer ---
-        // Full path line (above status)
+        // Full path line (above status) — フォーカスペインの値を表示
         string fullPath = GetCurrentFullPath(pane);
+        if (State.SplitActive)
+        {
+            string prefix = State.FocusedPane == 0 ? "[^]" : "[v]";
+            fullPath = prefix + fullPath;
+        }
         fullPath = CharacterWidth.SmartTruncate(fullPath, width);
         frame[height - 2] = CharacterWidth.PadToWidth(fullPath, width);
 
@@ -4663,7 +4684,7 @@ static class Program
              i++)
         {
             bool isFirstVisible = (i == pane.HorizontalScroll);
-            DrawColumnToLines(lines, pane.Columns[i], displayX, i == pane.ActiveColumn, i < pane.ActiveColumn, width, height, isFirstVisible, yOffset);
+            DrawColumnToLines(lines, pane, pane.Columns[i], displayX, i == pane.ActiveColumn, i < pane.ActiveColumn, width, height, isFirstVisible, focused, yOffset);
             displayX += ColumnWidth;
             drawnColumnsWidth += ColumnWidth;
         }
@@ -4690,12 +4711,25 @@ static class Program
         _ = focused;
     }
 
-    internal static void DrawColumnToLines(Line[] lines, Column column, int displayX, bool active, bool isLeft, int frameWidth, int frameHeight, bool isFirstVisible, int yOffset)
+    internal static void DrawColumnToLines(Line[] lines, Pane pane, Column column, int displayX, bool active, bool isLeft, int frameWidth, int frameHeight, bool isFirstVisible, bool focused, int yOffset)
     {
-        Pane pane = FocusedPane;
         // frameHeight is the height of the rectangle assigned to this pane (not the whole screen);
         // subtract 3 rows (header + full-path row + status row) from that rectangle height.
         int visibleHeight = frameHeight - 3;  // Reserve 3 rows: header + fullpath + status
+
+        // 減光パレット選択(非フォーカスペイン用)。SGR 2 (dim) は端末依存で不安定なため使わず、
+        // ANSI 90 系(明るい黒 = グレー)の色コードに明示的に差し替える。
+        string dirColor      = focused ? "\x1b[94m" : AnsiColors.Gray;   // ディレクトリ色: 明青→グレー
+        string selBgActive   = focused ? "\x1b[47m" : "\x1b[100m";       // 選択行背景(このカラムがアクティブ時): 白→暗グレー
+        string selBgInactive = "\x1b[100m";                              // 選択行背景(このカラムが非アクティブ時): 常に暗グレー(変更なし)
+        string selDirText    = focused ? "\x1b[94m" : AnsiColors.Gray;   // 選択行内ディレクトリ文字色
+        string selFileText   = focused ? "\x1b[30m" : AnsiColors.Gray;   // 選択行内ファイル文字色
+        string matchBg       = focused ? "\x1b[42m" : "\x1b[100m";       // Search 現在マッチ背景: 緑→暗グレー
+        string matchText     = focused ? "\x1b[30m" : AnsiColors.Gray;   // Search 現在マッチ文字色
+        string otherMatchFg  = focused ? "\x1b[32m" : AnsiColors.Gray;   // Search 他マッチ前景: 緑→グレー
+        string leapSelBg     = focused ? "\x1b[47m" : "\x1b[100m";       // Leap 選択行背景
+        string leapDirText   = focused ? "\x1b[94m" : AnsiColors.Gray;   // Leap 選択行ディレクトリ文字色
+        string leapFileText  = focused ? "\x1b[30m" : AnsiColors.Gray;   // Leap 選択行ファイル文字色
 
         int entryCount = column.Entries.Count;
 
@@ -4788,8 +4822,8 @@ static class Program
 
                 if (isSelected && active)
                 {
-                    string bgColor = "\x1b[47m";
-                    string textColor = isDirectory ? "\x1b[94m" : "\x1b[30m";
+                    string bgColor = leapSelBg;
+                    string textColor = isDirectory ? leapDirText : leapFileText;
                     string reset = "\x1b[0m";
                     string displayText = prefix + entry;
                     int displayTextWidth = CharacterWidth.GetStringWidth(displayText);
@@ -4801,7 +4835,7 @@ static class Program
                 {
                     int displayWidth = 2 + CharacterWidth.GetStringWidth(entry);
                     if (isDirectory)
-                        entry = AnsiColors.Colorize(entry, AnsiColors.Blue);
+                        entry = AnsiColors.Colorize(entry, dirColor);
                     lines[yOffset + startRow + i].AddColumn(prefix + entry, displayWidth, ColumnWidth);
                 }
             }
@@ -4844,8 +4878,8 @@ static class Program
                 if (isCurrentMatch)
                 {
                     // Current match: green background, black text
-                    string bgColor = "\x1b[42m";
-                    string textColor = "\x1b[30m";
+                    string bgColor = matchBg;
+                    string textColor = matchText;
                     string reset = "\x1b[0m";
 
                     string displayText = prefix + entry;
@@ -4862,8 +4896,8 @@ static class Program
                     // Background extends across full pane width
                     // Active: white bg, Inactive: gray bg
                     // Text: black for files, dark blue for directories
-                    string bgColor = active ? "\x1b[47m" : "\x1b[100m";
-                    string textColor = isDirectory ? "\x1b[94m" : "\x1b[30m";
+                    string bgColor = active ? selBgActive : selBgInactive;
+                    string textColor = isDirectory ? selDirText : selFileText;
                     string reset = "\x1b[0m";
 
                     string displayText = prefix + entry;
@@ -4880,7 +4914,7 @@ static class Program
                 {
                     // Other match: green foreground text on default background
                     int displayWidth = 2 + CharacterWidth.GetStringWidth(entry);
-                    string coloredEntry = "\x1b[32m" + entry + "\x1b[0m";
+                    string coloredEntry = otherMatchFg + entry + "\x1b[0m";
                     lines[yOffset + startRow + i].AddColumn(prefix + coloredEntry, displayWidth, ColumnWidth);
                 }
                 else
@@ -4888,7 +4922,7 @@ static class Program
                     // Non-selected: use original logic
                     int displayWidth = 2 + CharacterWidth.GetStringWidth(entry);
                     if (isDirectory)
-                        entry = AnsiColors.Colorize(entry, AnsiColors.Blue);
+                        entry = AnsiColors.Colorize(entry, dirColor);
                     lines[yOffset + startRow + i].AddColumn(prefix + entry, displayWidth, ColumnWidth);
                 }
             }
