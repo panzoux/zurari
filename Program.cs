@@ -2466,6 +2466,13 @@ static class Program
                 }
                 break;
 
+            case ConsoleKey.Tab:
+                if (State.SplitActive)
+                {
+                    State.FocusedPane = State.FocusedPane == 0 ? 1 : 0;
+                }
+                break;
+
             case ConsoleKey.F3:
                 EnterLeapMode(pane);
                 break;

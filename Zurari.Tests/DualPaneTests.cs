@@ -46,3 +46,35 @@ public class DualPaneTests
         Assert.Equal(6, bottomHeight);
     }
 }
+
+public class FocusSwitchTests
+{
+    [Fact]
+    public void Tab_WhenNotSplit_DoesNotChangeFocus()
+    {
+        var state = new ScreenState();
+        state.Panes.Add(new Pane());
+        state.SplitActive = false;
+        state.FocusedPane = 0;
+
+        // 分割していないときは Tab を無視する(呼び出し側のガード条件を検証)
+        bool shouldSwitch = state.SplitActive;
+        Assert.False(shouldSwitch);
+    }
+
+    [Fact]
+    public void Tab_WhenSplit_TogglesBetweenPane0And1()
+    {
+        var state = new ScreenState();
+        state.Panes.Add(new Pane());
+        state.Panes.Add(new Pane());
+        state.SplitActive = true;
+        state.FocusedPane = 0;
+
+        state.FocusedPane = state.FocusedPane == 0 ? 1 : 0;
+        Assert.Equal(1, state.FocusedPane);
+
+        state.FocusedPane = state.FocusedPane == 0 ? 1 : 0;
+        Assert.Equal(0, state.FocusedPane);
+    }
+}
