@@ -3195,6 +3195,8 @@ static class Program
             if (refreshed.LoadingTask != null) await refreshed.LoadingTask;
             refreshed.RestoreTo = isDir ? newName + "/" : newName;
             SeekRestoreTo(refreshed);
+            refreshed.Marked = col.Marked;
+            MarkHelper.ReconcileAfterReload(refreshed);
             pane.Columns[pane.ActiveColumn] = refreshed;
             await RebuildRightSideAsync(pane, pane.ActiveColumn);
         }
@@ -3429,6 +3431,12 @@ static class Program
         Column refreshed = await CreateColumnAsync(currentPath, CancellationToken.None);
         if (refreshed.LoadingTask != null)
             await refreshed.LoadingTask;
+
+        // マーク状態は Column インスタンスではなく「そのディレクトリの表示」に属するため、
+        // 差し替え前に引き継いでから、新しい Entries に存在しない名前を除去する。
+        refreshed.Marked = current.Marked;
+        MarkHelper.ReconcileAfterReload(refreshed);
+
         pane.Columns[pane.ActiveColumn] = refreshed;
 
         await RebuildRightSideAsync(pane, pane.ActiveColumn);
