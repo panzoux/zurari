@@ -94,4 +94,73 @@ public class MarkStateTests
         MarkHelper.ReconcileAfterReload(c);
         Assert.Empty(c.Marked);
     }
+
+    [Fact]
+    public void ToggleMarkAndAdvance_NoFilePlaceholder_NoOp()
+    {
+        var c = new Column("test");
+        c.Entries.Add("<No file>");
+        MarkHelper.ToggleMarkAndAdvance(c);
+        Assert.Empty(c.Marked);
+    }
+
+    static Pane MakePane(Column column)
+    {
+        var p = new Pane();
+        p.Columns.Add(column);
+        p.ActiveColumn = 0;
+        return p;
+    }
+
+    [Fact]
+    public void GetOperationTargets_NoMarks_ReturnsCursorEntryOnly()
+    {
+        var c = MakeColumn(5, selected: 2);
+        c.Path = @"C:\dir";
+        var pane = MakePane(c);
+
+        var targets = Program.GetOperationTargets(pane);
+
+        Assert.Single(targets);
+        Assert.EndsWith("file002.txt", targets[0]);
+    }
+
+    [Fact]
+    public void GetOperationTargets_WithMarks_ReturnsMarkedEntriesInEntryOrder()
+    {
+        var c = MakeColumn(5, selected: 0);
+        c.Path = @"C:\dir";
+        c.Marked.Add("file003.txt");
+        c.Marked.Add("file001.txt");
+        var pane = MakePane(c);
+
+        var targets = Program.GetOperationTargets(pane);
+
+        Assert.Equal(2, targets.Count);
+        Assert.EndsWith("file001.txt", targets[0]); // Entries順: file001 が file003 より先
+        Assert.EndsWith("file003.txt", targets[1]);
+    }
+
+    [Fact]
+    public void GetOperationTargets_EmptyColumn_ReturnsEmpty()
+    {
+        var c = MakeColumn(0);
+        var pane = MakePane(c);
+
+        var targets = Program.GetOperationTargets(pane);
+
+        Assert.Empty(targets);
+    }
+
+    [Fact]
+    public void GetOperationTargets_NoFilePlaceholder_ReturnsEmpty()
+    {
+        var c = new Column("test");
+        c.Entries.Add("<No file>");
+        var pane = MakePane(c);
+
+        var targets = Program.GetOperationTargets(pane);
+
+        Assert.Empty(targets);
+    }
 }

@@ -297,6 +297,8 @@ static class MarkHelper
         if (column.Selected < 0 || column.Selected >= column.Entries.Count) return;
 
         string name = column.Entries[column.Selected];
+        if (name == "<No file>") return; // 空ディレクトリのプレースホルダはマーク対象外
+
         if (column.Marked.Contains(name))
             column.Marked.Remove(name);
         else
@@ -3087,6 +3089,47 @@ static class Program
         pane.HorizontalScroll = Math.Max(minHS, Math.Min(pane.HorizontalScroll, maxHS));
     }
 
+    // 操作対象の組み立て規則(spec「複数マーク設計」節):
+    // フォーカスペインのアクティブカラムに1件以上マークがあればマーク集合(Entries 順・フルパス化)、
+    // なければカーソル下1件。他カラム・他ペインのマークは常に無視する。
+    // internal: Zurari.Tests から InternalsVisibleTo 経由で直接呼び出すため。
+    internal static List<string> GetOperationTargets(Pane pane)
+    {
+        Column active = pane.Columns[pane.ActiveColumn];
+        var result = new List<string>();
+
+        if (active.Marked.Count > 0)
+        {
+            // Entries の表示順を保つため、Marked(順序無保証の HashSet)ではなく
+            // Entries を走査して Marked に含まれるものだけを拾う。
+            foreach (string name in active.Entries)
+            {
+                if (active.Marked.Contains(name))
+                    result.Add(BuildFullPath(active.Path, name));
+            }
+            return result;
+        }
+
+        if (active.Entries.Count > 0 && active.Selected >= 0 && active.Selected < active.Entries.Count)
+        {
+            string name = active.Entries[active.Selected];
+            if (name != "<No file>")
+                result.Add(BuildFullPath(active.Path, name));
+        }
+
+        return result;
+    }
+
+    // エントリ名の末尾 "/" (ディレクトリ)はフルパス側にも残す。
+    // ExecuteDeleteAsync 等が isDir 判定・Marked 復元(エントリ名再構成)に使うため。
+    static string BuildFullPath(string columnPath, string entryName)
+    {
+        if (columnPath == "::DRIVES::")
+            return entryName.TrimEnd('/') + "\\";
+        string combined = Path.Combine(columnPath, entryName.TrimEnd('/'));
+        return entryName.EndsWith("/") ? combined + "/" : combined;
+    }
+
     static bool SelectedIsDeletable(Pane pane, out Column col, out string name)
     {
         col = pane.Columns[pane.ActiveColumn];
@@ -3101,61 +3144,88 @@ static class Program
 
     static void RequestDeleteSelected(Pane pane)
     {
-        if (!SelectedIsDeletable(pane, out Column col, out string name))
-            return;
+        Column activeCol = pane.Columns[pane.ActiveColumn];
+        if (activeCol.Path == "::DRIVES::") return;
 
-        string displayName = name.TrimEnd('/');
+        List<string> targets = GetOperationTargets(pane);
+        if (targets.Count == 0) return;
+
+        string message = targets.Count == 1
+            ? $"{Path.GetFileName(targets[0].TrimEnd('/'))} を削除しますか?(ごみ箱へ)"
+            : $"{targets.Count}件を削除しますか?(ごみ箱へ)";
+
         ShowConfirm(
             "削除",
-            $"{displayName} を削除しますか?(ごみ箱へ)",
+            message,
             async result =>
             {
                 if (result != true) return;
-                await ExecuteDeleteAsync(pane, col, name);
+                await ExecuteDeleteAsync(pane, targets);
             });
     }
 
-    static async Task ExecuteDeleteAsync(Pane pane, Column col, string name)
+    static async Task ExecuteDeleteAsync(Pane pane, List<string> targets)
     {
-        string fullPath = Path.Combine(col.Path, name.TrimEnd('/'));
-        bool isDir = name.EndsWith("/");
-        string opName = "DELETE";
-        string result;
-        string message = "";
+        Column activeCol = pane.Columns[pane.ActiveColumn];
+        int okCount = 0, failCount = 0;
+        string? firstError = null;
 
-        bool sentToRecycleBin = false;
-        if (IsWindows())
+        foreach (string target in targets)
         {
-            sentToRecycleBin = RecycleBin.TrySend(fullPath, out string rbError);
-            if (!sentToRecycleBin)
-                message = rbError;
-        }
+            bool isDir = target.EndsWith("/");
+            string fullPath = target.TrimEnd('/');
+            string result;
+            string message = "";
 
-        if (sentToRecycleBin)
-        {
-            result = "OK";
-            _lastErrorMessage = null;
-        }
-        else
-        {
-            try
+            bool sentToRecycleBin = false;
+            if (IsWindows())
             {
-                if (isDir)
-                    Directory.Delete(fullPath, recursive: true);
-                else
-                    File.Delete(fullPath);
+                sentToRecycleBin = RecycleBin.TrySend(fullPath, out string rbError);
+                if (!sentToRecycleBin)
+                    message = rbError;
+            }
+
+            if (sentToRecycleBin)
+            {
                 result = "OK";
-                _lastErrorMessage = null;
             }
-            catch (Exception ex)
+            else
             {
-                result = "FAIL";
-                message = ex.Message;
-                _lastErrorMessage = $"削除失敗: {ex.Message}";
+                try
+                {
+                    if (isDir)
+                        Directory.Delete(fullPath, recursive: true);
+                    else
+                        File.Delete(fullPath);
+                    result = "OK";
+                }
+                catch (Exception ex)
+                {
+                    result = "FAIL";
+                    message = ex.Message;
+                }
+            }
+
+            OperationLog.Append(new OpLogEntry(DateTime.UtcNow, null, "DELETE", result, fullPath, "", message));
+
+            if (result == "OK")
+            {
+                okCount++;
+                // Marked のキーは Entries の文字列と完全一致(ディレクトリは "/" サフィックス付き)。
+                // フルパスの末尾から同じ形式のエントリ名を復元する。
+                string entryName = Path.GetFileName(fullPath) + (isDir ? "/" : "");
+                activeCol.Marked.Remove(entryName);
+            }
+            else
+            {
+                failCount++;
+                firstError ??= message;
             }
         }
 
-        OperationLog.Append(new OpLogEntry(DateTime.UtcNow, null, opName, result, fullPath, "", message));
+        _lastErrorMessage = failCount == 0
+            ? $"削除完了: {okCount}件"
+            : $"削除: {okCount}件完了 / {failCount}件失敗: {firstError}";
 
         await RefreshCurrentAsync(pane);
     }
