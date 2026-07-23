@@ -2,48 +2,106 @@ using Xunit;
 
 public class DualPaneTests
 {
-    // 最小ペイン高さ = ヘッダ1 + 本文3 = 4行。フッター2行+区切り線1行を引いた残りが
-    // 2ペイン分(4行×2=8行)未満なら分割不可。
-    const int MinPaneHeight = 4;
-
-    static bool CanSplit(int terminalHeight)
-    {
-        int available = terminalHeight - 2 /* footer */ - 1 /* separator */;
-        return available >= MinPaneHeight * 2;
-    }
+    // 最小ペイン高さ = ヘッダ1 + 本文2 + 自分のパス行1 = 4行。共有ステータス1行+区切り線1行を
+    // 引いた残りが2ペイン分(4行×2=8行)未満なら分割不可。
+    // (以前は共有フッターが「フルパス+ステータス」の2行だったが、各ペインが自分のフルパス行を
+    //  持つようになったため、共有で引くのはステータス1行のみになった。)
 
     [Theory]
-    [InlineData(11, true)]   // available = 8 = MinPaneHeight*2 → ちょうど境界は許可
-    [InlineData(10, false)]  // available = 7 < 8 → 拒否
-    [InlineData(12, true)]   // available = 9 >= 8 → 許可
+    [InlineData(10, true)]   // available = 8 = MinPaneHeight*2 → ちょうど境界は許可
+    [InlineData(9, false)]   // available = 7 < 8 → 拒否
+    [InlineData(11, true)]   // available = 9 >= 8 → 許可
     [InlineData(3, false)]   // 極端に小さい端末
     public void CanSplit_RequiresMinimumAvailableHeight(int terminalHeight, bool expected)
     {
-        Assert.Equal(expected, CanSplit(terminalHeight));
+        Assert.Equal(expected, Program.CanSplit(terminalHeight));
     }
 
     [Fact]
     public void PaneHeight_OddAvailable_ExtraRowGoesToBottomPane()
     {
-        // height=15 → available = 15-2-1 = 12 → paneHeight(top) = 12/2 = 6, bottom = 12-6 = 6 (偶数なので均等)
+        // height=15 → available = 15-1-1 = 13(奇数) → topHeight = 13/2 = 6, bottomHeight = 13-6 = 7 (端数は下へ)
         int height = 15;
-        int available = height - 2 - 1;
+        int available = height - 1 - 1;
+        int topHeight = available / 2;
+        int bottomHeight = available - topHeight;
+        Assert.Equal(6, topHeight);
+        Assert.Equal(7, bottomHeight);
+    }
+
+    [Fact]
+    public void PaneHeight_EvenAvailable_SplitsEvenly()
+    {
+        // height=14 → available = 12(偶数) → topHeight = 6, bottomHeight = 6
+        int height = 14;
+        int available = height - 1 - 1;
         int topHeight = available / 2;
         int bottomHeight = available - topHeight;
         Assert.Equal(6, topHeight);
         Assert.Equal(6, bottomHeight);
     }
+}
+
+public class PaneOwnPathLineTests
+{
+    static Line[] NewLines(int height)
+    {
+        var lines = new Line[height];
+        for (int i = 0; i < height; i++)
+            lines[i] = new Line();
+        return lines;
+    }
+
+    static Pane MakePane(string path)
+    {
+        var pane = new Pane();
+        pane.Columns.Add(new Column(path));
+        return pane;
+    }
 
     [Fact]
-    public void PaneHeight_EvenAvailable_ExtraRowGoesToBottomPane()
+    public void ShowOwnPathLine_True_WritesFocusedPrefixAndPathAtLastRow()
     {
-        // height=14 → available = 11 → topHeight = 11/2 = 5 (整数除算), bottomHeight = 11-5 = 6 (端数は下へ)
-        int height = 14;
-        int available = height - 2 - 1;
-        int topHeight = available / 2;
-        int bottomHeight = available - topHeight;
-        Assert.Equal(5, topHeight);
-        Assert.Equal(6, bottomHeight);
+        const int width = 40;
+        const int height = 8;
+        const int yOffset = 3;
+        Line[] lines = NewLines(yOffset + height);
+        Pane pane = MakePane("C:\\test\\dir");
+
+        Program.DrawPaneToLines(lines, pane, yOffset, height, focused: true, showOwnPathLine: true, width: width);
+
+        string lastRow = lines[yOffset + height - 1].Render(width);
+        Assert.StartsWith("> ", lastRow);
+        Assert.Contains("C:\\test\\dir", lastRow);
+    }
+
+    [Fact]
+    public void ShowOwnPathLine_True_NonFocused_UsesBlankPrefix()
+    {
+        const int width = 40;
+        const int height = 8;
+        Line[] lines = NewLines(height);
+        Pane pane = MakePane("C:\\test\\dir");
+
+        Program.DrawPaneToLines(lines, pane, 0, height, focused: false, showOwnPathLine: true, width: width);
+
+        string lastRow = lines[height - 1].Render(width);
+        Assert.StartsWith("  ", lastRow);
+        Assert.Contains("C:\\test\\dir", lastRow);
+    }
+
+    [Fact]
+    public void ShowOwnPathLine_False_LastRowUntouched()
+    {
+        const int width = 40;
+        const int height = 8;
+        Line[] lines = NewLines(height);
+        Pane pane = MakePane("C:\\test\\dir");
+
+        Program.DrawPaneToLines(lines, pane, 0, height, focused: true, showOwnPathLine: false, width: width);
+
+        string lastRow = lines[height - 1].Render(width);
+        Assert.Equal(new string(' ', width), lastRow);
     }
 }
 

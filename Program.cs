@@ -3008,9 +3008,9 @@ static class Program
         }
     }
 
-    static bool CanSplit(int terminalHeight)
+    internal static bool CanSplit(int terminalHeight)
     {
-        int available = terminalHeight - 2 /* footer rows */ - 1 /* separator row */;
+        int available = terminalHeight - 1 /* status row (shared) */ - 1 /* separator row */;
         return available >= MinPaneHeight * 2;
     }
 
@@ -4567,6 +4567,7 @@ static class Program
             lines[i] = new Line();
 
         // --- Layer 1: pane-rect drawing ---
+        int footerRows; // rows at the bottom of `frame` written directly, not via `lines[]`
         if (!State.SplitActive)
         {
             // yOffset=0, focused=true fixed. DrawPaneToLines's `height` parameter conceptually
@@ -4574,41 +4575,45 @@ static class Program
             // rectangle still spans the full screen height, matching what the pre-refactor code
             // implicitly passed as frameHeight to DrawColumnToLines/DrawPreviewToLines. Passing
             // `height` here (not height-2) preserves the original visibleHeight = frameHeight - 3
-            // math exactly, keeping output byte-identical.
-            DrawPaneToLines(lines, pane, 0, height, true, width);
+            // math exactly, keeping output byte-identical. The shared 2-row footer (full path +
+            // status) below still applies, since a single pane has no own path line of its own.
+            DrawPaneToLines(lines, pane, 0, height, true, false, width);
+            footerRows = 2;
         }
         else
         {
-            int available = height - 2 - 1; // フッター2行・区切り線1行を除いた残り
+            // Each pane now draws its own full-path line at the bottom of its own rectangle
+            // (so source/destination paths are both visible at once for copy/move), so the
+            // shared footer shrinks to just the 1 status row.
+            int available = height - 1 /* status row */ - 1 /* separator row */;
             int topHeight = available / 2;
             int bottomHeight = available - topHeight; // 端数は下ペインへ
             int separatorRow = topHeight;
             int bottomOffset = topHeight + 1;
 
-            DrawPaneToLines(lines, State.Panes[0], 0, topHeight, State.FocusedPane == 0, width);
+            DrawPaneToLines(lines, State.Panes[0], 0, topHeight, State.FocusedPane == 0, true, width);
 
             string sep = new string('─', width);
             lines[separatorRow].AddColumn(sep, width, width);
 
-            DrawPaneToLines(lines, State.Panes[1], bottomOffset, bottomHeight, State.FocusedPane == 1, width);
+            DrawPaneToLines(lines, State.Panes[1], bottomOffset, bottomHeight, State.FocusedPane == 1, true, width);
+            footerRows = 1;
         }
 
         // Render each line to string and pad to window width
-        for (int i = 0; i < height - 2; i++)
+        for (int i = 0; i < height - footerRows; i++)
         {
             frame[i] = lines[i].Render(width);
         }
 
         // --- Layer 2: shared footer ---
-        // Full path line (above status) — フォーカスペインの値を表示
-        string fullPath = GetCurrentFullPath(pane);
-        if (State.SplitActive)
+        if (!State.SplitActive)
         {
-            string prefix = State.FocusedPane == 0 ? "[^]" : "[v]";
-            fullPath = prefix + fullPath;
+            // Full path line (above status) — single pane, no own path line was drawn above.
+            string fullPath = GetCurrentFullPath(pane);
+            fullPath = CharacterWidth.SmartTruncate(fullPath, width);
+            frame[height - 2] = CharacterWidth.PadToWidth(fullPath, width);
         }
-        fullPath = CharacterWidth.SmartTruncate(fullPath, width);
-        frame[height - 2] = CharacterWidth.PadToWidth(fullPath, width);
 
         // Override status with preview-hidden hint only when terminal width is the limiting factor
         if (pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane) && Console.WindowWidth < ColumnWidth * 2)
@@ -4670,7 +4675,7 @@ static class Program
         ComposeDialogIntoFrame(frame, State.Dialog, width, height);
     }
 
-    static void DrawPaneToLines(Line[] lines, Pane pane, int yOffset, int height, bool focused, int width)
+    internal static void DrawPaneToLines(Line[] lines, Pane pane, int yOffset, int height, bool focused, bool showOwnPathLine, int width)
     {
         bool showPreview = pane.Preview.IsVisible && Console.WindowWidth >= ColumnWidth * 2;
         bool filePreview = pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane);
@@ -4679,12 +4684,19 @@ static class Program
         int drawnColumnsWidth = 0;
         int columnDrawLimit = filePreview ? width - ColumnWidth : width;
 
+        // Column/preview body height: normally the rectangle reserves 3 rows internally
+        // (header + 2 rows matching the single-pane shared footer). When this pane draws
+        // its own path line at its last row (split mode), only 2 rows need reserving
+        // (header + this path line), so pad frameHeight by 1 to shrink that internal
+        // reservation by 1 without touching DrawColumnToLines/DrawPreviewToLines math.
+        int bodyFrameHeight = showOwnPathLine ? height + 1 : height;
+
         for (int i = pane.HorizontalScroll;
              i < pane.Columns.Count && displayX + ColumnWidth <= columnDrawLimit;
              i++)
         {
             bool isFirstVisible = (i == pane.HorizontalScroll);
-            DrawColumnToLines(lines, pane, pane.Columns[i], displayX, i == pane.ActiveColumn, i < pane.ActiveColumn, width, height, isFirstVisible, focused, yOffset);
+            DrawColumnToLines(lines, pane, pane.Columns[i], displayX, i == pane.ActiveColumn, i < pane.ActiveColumn, width, bodyFrameHeight, isFirstVisible, focused, yOffset);
             displayX += ColumnWidth;
             drawnColumnsWidth += ColumnWidth;
         }
@@ -4703,12 +4715,17 @@ static class Program
             }
 
             if (previewWidth >= ColumnWidth)
-                DrawPreviewToLines(lines, content, drawnColumnsWidth, previewWidth, height, yOffset);
+                DrawPreviewToLines(lines, content, drawnColumnsWidth, previewWidth, bodyFrameHeight, yOffset);
         }
 
-        // focused is always true in this phase (dimmed-palette support is a later phase).
-        // Accepted as a parameter now so future phases don't need to change this call signature.
-        _ = focused;
+        if (showOwnPathLine)
+        {
+            string prefix = focused ? "> " : "  ";
+            string fullPath = prefix + GetCurrentFullPath(pane);
+            fullPath = CharacterWidth.SmartTruncate(fullPath, width);
+            string padded = CharacterWidth.PadToWidth(fullPath, width);
+            lines[yOffset + height - 1].AddColumn(padded, width, width);
+        }
     }
 
     internal static void DrawColumnToLines(Line[] lines, Pane pane, Column column, int displayX, bool active, bool isLeft, int frameWidth, int frameHeight, bool isFirstVisible, bool focused, int yOffset)
