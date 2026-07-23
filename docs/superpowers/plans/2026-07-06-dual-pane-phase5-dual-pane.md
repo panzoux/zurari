@@ -518,7 +518,7 @@
 
 - [x] 3.8 `dotnet test Zurari.Tests/Zurari.Tests.csproj` を実行する。**期待結果**: `Passed!`(全緑)。既存の `SearchStatusBarTests` 等が `BuildLeapStatusBar`/`BuildSearchStatusBar` のシグネチャに依存している場合、影響がないことを確認する(これらのシグネチャは本 Phase では変更しない)。
 
-- [ ] 3.9 単一ペイン・ダイアログなし状態で、Phase 2 完了条件(「旧 `BuildFrame` と全く同じ出力」)が本 Phase の変更後も保たれているかを手動確認する(Manual Verification 節 M1 参照)。
+- [x] 3.9 単一ペイン・ダイアログなし状態で、Phase 2 完了条件(「旧 `BuildFrame` と全く同じ出力」)が本 Phase の変更後も保たれているかを手動確認する(Manual Verification 節 M1 参照)。
 
 - [x] 3.10 `git add Program.cs && git commit -m "feat: split BuildFrame into per-pane viewport rendering with dimming palette"` を実行する。
 
@@ -593,7 +593,7 @@ Phase 3 で確立済みの優先順位(`State.Dialog != null` → `FocusedPane.L
 
 - [x] 4.2 `HandleSpecialKeyAsync` に渡ってくる `pane` 引数が非フォーカスペインになることが構造的にないこと(呼び出し元が常に `FocusedPane` を渡すこと)をコードで確認する。
 
-- [ ] 4.3 手動確認手順(Manual Verification 節 M6「ペイン独立ナビゲーション」)を実施する準備として、この時点でアプリをビルドし起動できることを確認する: `dotnet build Zurari.csproj && dotnet bin/Debug/net8.0/Zurari.dll`(または `dotnet run --project Zurari.csproj`)。**期待結果**: 起動しクラッシュしない。
+- [x] 4.3 手動確認手順(Manual Verification 節 M6「ペイン独立ナビゲーション」)を実施する準備として、この時点でアプリをビルドし起動できることを確認する: `dotnet build Zurari.csproj && dotnet bin/Debug/net8.0/Zurari.dll`(または `dotnet run --project Zurari.csproj`)。**期待結果**: 起動しクラッシュしない。
 
 - [x] 4.4 このタスクで `Program.cs` に実際の修正が発生した場合のみ、`git add Program.cs && git commit -m "fix: route leap/search/dialog input through FocusedPane consistently"` を実行する。修正が発生しなかった場合はコミット不要(タスクを完了としてチェックのみ行う)。
 
@@ -665,20 +665,20 @@ Phase 3 で確立済みの優先順位(`State.Dialog != null` → `FocusedPane.L
 
 ## 完了条件チェックリスト
 
-- [ ] `Ctrl+W` で分割の開閉が往復できる(M2)。
-- [ ] `Tab` でフォーカスが移動する(分割時のみ、M3)。
-- [ ] 両ペインが独立してナビゲーション・検索・Leap を実行できる(M6, M8)。
-- [ ] 非フォーカスペインの減光表示が正しく切り替わる(M4)。
-- [ ] パス行の `[^]`/`[v]` プレフィックスが正しく切り替わる(分割時のみ表示、M5)。
-- [ ] 小さすぎる端末では分割が拒否され `_lastErrorMessage` が表示される(M7)。
+- [x] `Ctrl+W` で分割の開閉が往復できる(M2)。
+- [x] `Tab` でフォーカスが移動する(分割時のみ、M3)。
+- [x] 両ペインが独立してナビゲーション・検索・Leap を実行できる(M6, M8)。
+- [x] 非フォーカスペインの減光表示が正しく切り替わる(M4)。
+- [x] パス行の `[^]`/`[v]` プレフィックスが正しく切り替わる(分割時のみ表示、M5)。
+- [x] 小さすぎる端末では分割が拒否され `_lastErrorMessage` が表示される(M7)。
 - [x] 分割解除時、非フォーカス側 Pane の `ReadCts` がキャンセルされる(コードレビューで確認: `CancelAllReadsInPane`)。
 - [x] `dotnet build Zurari.csproj` が exit 0 で成功する。
 - [x] `dotnet test Zurari.Tests/Zurari.Tests.csproj` が全緑(`Passed!`)である。
-- [ ] Phase 2 完了条件(単一ペイン・ダイアログなし時の出力が変更前と同一)が本 Phase 後も保たれている(M1)。
+- [x] Phase 2 完了条件(単一ペイン・ダイアログなし時の出力が変更前と同一)が本 Phase 後も保たれている(M1)。
 
 ## 未解決事項
 
 - **計画書内のテスト値の矛盾(Task 1.1)**: `[InlineData(11, false)]` はコメントで「available = 8 = MinPaneHeight*2 → ちょうど境界は許可」と書かれているにも関わらず期待値が `false` になっていた。実際に `CanSplit(11)` を計算すると `available(8) >= MinPaneHeight*2(8)` は `true` であり、コメントと `CanSplit`/`ToggleSplitAsync` 自体の `>=` 判定ロジックの両方と整合するのは `true` 側。計画書のタイプミスと判断し、`DualPaneTests.cs` では `[InlineData(11, true)]` に修正して実装した。
 - **既存バグの発見と修正(Task 3)**: `DrawColumnToLines` は本 Phase 開始前の時点で内部で `Pane pane = FocusedPane;` と、渡された描画対象カラムの所有ペインとは無関係にグローバルな `FocusedPane` を直接参照していた。単一ペインのみだったこれまでは無害だったが、2ペイン化すると非フォーカスペインの列を描画する際にも常にフォーカス側の `Leap`/`Search` 状態を見てしまい、非フォーカスペインの Leap/Search ハイライトが壊れる(spec の「両ペインが独立して Leap/Search を実行できる」「M6」に反する)。計画書はこの内部参照には言及していなかったため「未解決事項」として記録した上で、`DrawColumnToLines` のシグネチャに `Pane pane` を明示的な引数として追加し、呼び出し元(`DrawPaneToLines`)から実際の所有ペインを渡すよう修正した(`Zurari.Tests/ViewportRenderingTests.cs` の直接呼び出し2箇所も追随して修正)。
-- **手動確認(Manual Verification M1〜M8, Task 3.9, Task 4.3)は未実施**: 本セッションの実行環境(サンドボックス化された非対話シェル)には実コンソールハンドルが割り当てられておらず、`dotnet run --project Zurari.csproj` 相当を試みたところ `Console.WindowHeight` アクセスで `System.IO.IOException: ハンドルが無効です` が発生し起動できなかった(TUI アプリの対話操作を自動化できないため、これは環境側の制約であり本 Phase の実装に起因する回帰ではないと判断)。`dotnet build`/`dotnet test` による自動検証(exit 0 / 114 件全緑)とコードレビューでの整合性確認は完了しているが、M1〜M8 に列挙された実機での目視確認(分割の見た目、減光パレットの実際の色味、`[^]`/`[v]` プレフィックスの切り替わり、小端末での拒否メッセージ等)はユーザー自身が実ターミナルで `dotnet run --project Zurari.csproj` を実行して確認する必要がある。Phase 4 の完了記録(`39d503b`)と同様の扱いとした。
+- **手動確認(Manual Verification M1〜M8, Task 3.9, Task 4.3)はエージェント側では未実施、ユーザーが実機で確認済み**: 本セッションの実行環境(サンドボックス化された非対話シェル)には実コンソールハンドルが割り当てられておらず、`dotnet run --project Zurari.csproj` 相当を試みたところ `Console.WindowHeight` アクセスで `System.IO.IOException: ハンドルが無効です` が発生し起動できなかった(TUI アプリの対話操作を自動化できないため、これは環境側の制約であり本 Phase の実装に起因する回帰ではないと判断)。`dotnet build`/`dotnet test` による自動検証(exit 0 / 114 件全緑)とコードレビューでの整合性確認はエージェント側で完了。その後、ユーザーが実ターミナルで `dotnet run --project Zurari.csproj` を実行し M1〜M8 すべてを確認し、完了条件チェックリストの該当項目にチェックを入れることを承認した。
 - **分割時の非最下段ペインでのスペース浪費(コスメティックな観察事項、未修正)**: `BuildFrame` の分割描画では `DrawPaneToLines` 経由で `DrawColumnToLines`/`DrawPreviewToLines` の既存の `frameHeight - 3` 予約ロジック(ヘッダ1行+共有フッター2行分)をペインごとの高さ(`topHeight`/`bottomHeight`)にもそのまま適用している。この結果、上ペイン(最下段ではない側)の矩形内では实際に使われるのは `topHeight - 2` 行分のみで、区切り線の直前に2行分の空白が残る(下ペインは元々フッターに隣接するため実害なし)。計画書 Task 3.5 のコードをそのまま踏襲した結果であり、「既存のナビゲーション関数は無改修で両ペインに適用する」という Architecture 方針とも整合するため、本セッションでは意図的に修正しなかった。見た目上のズレが気になる場合は、ペインの位置(最下段かどうか)に応じて `frameHeight` の予約行数を可変にする追加 Phase の対象として検討されたい。
