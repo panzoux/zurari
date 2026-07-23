@@ -4811,6 +4811,7 @@ static class Program
         string leapSelBg     = focused ? "\x1b[47m" : "\x1b[100m";       // Leap 選択行背景
         string leapDirText   = focused ? "\x1b[94m" : AnsiColors.Gray;   // Leap 選択行ディレクトリ文字色
         string leapFileText  = focused ? "\x1b[30m" : AnsiColors.Gray;   // Leap 選択行ファイル文字色
+        string markColor     = focused ? "\x1b[93m" : AnsiColors.Gray;  // マーク(*)文字色: 黄→グレー
 
         int entryCount = column.Entries.Count;
 
@@ -4897,16 +4898,18 @@ static class Program
                 string text = column.Entries[absIdx];
                 bool isDirectory = text.EndsWith("/");
                 bool isSelected = absIdx == column.Selected;
+                bool isMarked = column.Marked.Contains(text);
 
                 string prefix = (isSelected && active) ? "> " : "  ";
-                string entry = CharacterWidth.SmartTruncate(text, maxEntryWidth);
+                string markGlyph = isMarked ? "*" : "";
+                string entry = CharacterWidth.SmartTruncate(text, isMarked ? maxEntryWidth - 1 : maxEntryWidth);
 
                 if (isSelected && active)
                 {
                     string bgColor = leapSelBg;
                     string textColor = isDirectory ? leapDirText : leapFileText;
                     string reset = "\x1b[0m";
-                    string displayText = prefix + entry;
+                    string displayText = prefix + markGlyph + entry;
                     int displayTextWidth = CharacterWidth.GetStringWidth(displayText);
                     int paddingNeeded = Math.Max(0, contentSlot - displayTextWidth);
                     string fullLine = bgColor + textColor + displayText + new string(' ', paddingNeeded) + reset;
@@ -4914,10 +4917,11 @@ static class Program
                 }
                 else
                 {
-                    int displayWidth = 2 + CharacterWidth.GetStringWidth(entry);
+                    int displayWidth = 2 + (isMarked ? 1 : 0) + CharacterWidth.GetStringWidth(entry);
                     if (isDirectory)
                         entry = AnsiColors.Colorize(entry, dirColor);
-                    lines[yOffset + startRow + i].AddColumn(prefix + entry, displayWidth, ColumnWidth);
+                    string coloredMark = isMarked ? markColor + "*" + "\x1b[0m" : "";
+                    lines[yOffset + startRow + i].AddColumn(prefix + coloredMark + entry, displayWidth, ColumnWidth);
                 }
             }
         }
@@ -4935,6 +4939,7 @@ static class Program
                 string text = column.Entries[scrollOffset + i];
                 bool isDirectory = text.EndsWith("/");
                 bool isSelected = (scrollOffset + i) == column.Selected;
+                bool isMarked = column.Marked.Contains(text);
 
                 int entryAbsIndex = scrollOffset + i;
                 bool isCurrentMatch = inSearch && entryAbsIndex == currentMatchEntry;
@@ -4953,8 +4958,10 @@ static class Program
                 else
                     prefix = "  ";
 
-                // Truncate to fit
-                string entry = CharacterWidth.SmartTruncate(text, maxEntryWidth);
+                string markGlyph = isMarked ? "*" : "";
+
+                // Truncate to fit (mark glyph occupies 1 column of maxEntryWidth)
+                string entry = CharacterWidth.SmartTruncate(text, isMarked ? maxEntryWidth - 1 : maxEntryWidth);
 
                 if (isCurrentMatch)
                 {
@@ -4963,7 +4970,7 @@ static class Program
                     string textColor = matchText;
                     string reset = "\x1b[0m";
 
-                    string displayText = prefix + entry;
+                    string displayText = prefix + markGlyph + entry;
                     int displayTextWidth = CharacterWidth.GetStringWidth(displayText);
                     int paddingNeeded = Math.Max(0, contentSlot - displayTextWidth);
 
@@ -4981,7 +4988,7 @@ static class Program
                     string textColor = isDirectory ? selDirText : selFileText;
                     string reset = "\x1b[0m";
 
-                    string displayText = prefix + entry;
+                    string displayText = prefix + markGlyph + entry;
                     int displayTextWidth = CharacterWidth.GetStringWidth(displayText);
                     int paddingNeeded = Math.Max(0, contentSlot - displayTextWidth);
 
@@ -4994,17 +5001,19 @@ static class Program
                 else if (isOtherMatch)
                 {
                     // Other match: green foreground text on default background
-                    int displayWidth = 2 + CharacterWidth.GetStringWidth(entry);
+                    int displayWidth = 2 + (isMarked ? 1 : 0) + CharacterWidth.GetStringWidth(entry);
                     string coloredEntry = otherMatchFg + entry + "\x1b[0m";
-                    lines[yOffset + startRow + i].AddColumn(prefix + coloredEntry, displayWidth, ColumnWidth);
+                    string coloredMark = isMarked ? markColor + "*" + "\x1b[0m" : "";
+                    lines[yOffset + startRow + i].AddColumn(prefix + coloredMark + coloredEntry, displayWidth, ColumnWidth);
                 }
                 else
                 {
                     // Non-selected: use original logic
-                    int displayWidth = 2 + CharacterWidth.GetStringWidth(entry);
+                    int displayWidth = 2 + (isMarked ? 1 : 0) + CharacterWidth.GetStringWidth(entry);
                     if (isDirectory)
                         entry = AnsiColors.Colorize(entry, dirColor);
-                    lines[yOffset + startRow + i].AddColumn(prefix + entry, displayWidth, ColumnWidth);
+                    string coloredMark = isMarked ? markColor + "*" + "\x1b[0m" : "";
+                    lines[yOffset + startRow + i].AddColumn(prefix + coloredMark + entry, displayWidth, ColumnWidth);
                 }
             }
         }
