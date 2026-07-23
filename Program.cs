@@ -2511,6 +2511,25 @@ static class Program
                 }
                 break;
 
+            case ConsoleKey.Spacebar:
+            {
+                Column activeCol = pane.Columns[pane.ActiveColumn];
+                if (activeCol.Path == "::DRIVES::")
+                    break;
+
+                if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
+                {
+                    MarkHelper.ClearAll(activeCol);
+                }
+                else
+                {
+                    MarkHelper.ToggleMarkAndAdvance(activeCol);
+                    UpdateHorizontalScroll(pane);
+                    if (pane.Preview.IsVisible) StartPreviewLoad(pane);
+                }
+                break;
+            }
+
             case ConsoleKey.F3:
                 EnterLeapMode(pane);
                 break;
