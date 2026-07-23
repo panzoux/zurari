@@ -4793,6 +4793,11 @@ static class Program
                 status = $"Esc=Quit | Ctrl+Enter=Open | Shift+Enter/\\=Menu | {previewHint}";
             else
                 status = $"Esc=Quit | Ctrl+Enter=Open File | {previewHint}";
+
+            int markedCount = pane.Columns[pane.ActiveColumn].Marked.Count;
+            if (markedCount > 0)
+                status += $" | {markedCount}件マーク中";
+
             status = CharacterWidth.SmartTruncate(status, width);
             frame[height - 1] = CharacterWidth.PadToWidth(status, width);
         }
