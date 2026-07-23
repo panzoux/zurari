@@ -10,14 +10,14 @@
 
 ## 前提条件(開始前に検証)
 
-- [ ] **重要な不整合の申し送り**: 本計画は spec の「Phase 1〜5 完了後」を前提として書かれているが、計画作成時点（2026-07-06）で実際の `Program.cs`(3809行)を確認したところ、Phase 1〜5 の成果物（`Pane` クラス、`ScreenState.SplitActive`/`FocusedPane`/`Dialog`、`HandleSpecialKeyAsync(Pane pane, ...)` のようなシグネチャ変更、`DialogState` 系、`ShowConfirm`/`RecycleBin`/`OperationLog` 等）は**一切存在しない**。現状は `static class Program` が `List<Column> Columns` と `ScreenState State` を直接保持し、`HandleSpecialKeyAsync(ConsoleKeyInfo key)` は引数なしで `Columns[State.ActiveColumn]` を直接参照する形のままである（`Program.cs:1934` 以降、`Program.cs:3433` の `DrawColumnToLines` 呼び出し等）。
+- [x] **重要な不整合の申し送り**: 本計画は spec の「Phase 1〜5 完了後」を前提として書かれているが、計画作成時点（2026-07-06）で実際の `Program.cs`(3809行)を確認したところ、Phase 1〜5 の成果物（`Pane` クラス、`ScreenState.SplitActive`/`FocusedPane`/`Dialog`、`HandleSpecialKeyAsync(Pane pane, ...)` のようなシグネチャ変更、`DialogState` 系、`ShowConfirm`/`RecycleBin`/`OperationLog` 等）は**一切存在しない**。現状は `static class Program` が `List<Column> Columns` と `ScreenState State` を直接保持し、`HandleSpecialKeyAsync(ConsoleKeyInfo key)` は引数なしで `Columns[State.ActiveColumn]` を直接参照する形のままである（`Program.cs:1934` 以降、`Program.cs:3433` の `DrawColumnToLines` 呼び出し等）。
   - 実行セッションは着手前に `grep -n "sealed class Pane" Program.cs` と `grep -n "SplitActive" Program.cs` を実行し、Phase 1〜5 が実装済みかどうかを再確認すること。
   - **もし Phase 1〜5 が未実装のままなら**、本計画のコード断片（`Pane pane` 引数、`FocusedPane`、`ShowConfirm` 等）はそのままでは適用できない。この場合は実行セッションが「未解決事項」に「Phase 1〜5 未着手のため Phase 6 のコード断片を字面通り適用できない」旨を記録し、Phase 1〜5 の計画ファイル（`docs/superpowers/plans/2026-07-06-dual-pane-phase1-*.md` 等）の実行を先に依頼するようユーザーに報告して停止すること。自己判断で `Pane` 抽出や `ShowConfirm` を即興実装しないこと（本計画のスコープ外であり、Phase 1/3/4 の計画と重複実装すると不整合の原因になる）。
   - 本計画のコード断片は spec の API 契約（`Pane pane` 引数、`ShowConfirm(string, string, Action<bool?>)`、`OperationLog.Append`、`RecycleBin.TrySend` 等）が**すでに存在する**ことを前提に書かれている。Phase 1〜5・Phase 4（削除確認ダイアログ・ごみ箱・OperationLog）が完了している場合のみ、以下のステップをそのまま適用できる。
-- [ ] `dotnet build Zurari.csproj` が exit 0 で成功する（着手前のベースライン確認）。
-- [ ] `dotnet test Zurari.Tests/Zurari.Tests.csproj` が `Passed!` で全緑（既存テストが壊れていないことの確認）。
-- [ ] Phase 4 完了条件の再検証: 削除機能（`d`/`Delete`）が確認ダイアログ経由でごみ箱送りとして動作し、`OperationLog` に記録されることを、`Program.cs` 内で `case ConsoleKey.Delete:` および `ShowConfirm(` 呼び出しを検索して確認する。
-- [ ] Phase 5 完了条件の再検証: `Ctrl+W` による分割トグルと `Tab` によるフォーカス移動が動作し、`ScreenState.Panes`/`FocusedPane` が存在することを `grep -n "FocusedPane" Program.cs` で確認する。
+- [x] `dotnet build Zurari.csproj` が exit 0 で成功する（着手前のベースライン確認）。
+- [x] `dotnet test Zurari.Tests/Zurari.Tests.csproj` が `Passed!` で全緑（既存テストが壊れていないことの確認）。
+- [x] Phase 4 完了条件の再検証: 削除機能（`d`/`Delete`）が確認ダイアログ経由でごみ箱送りとして動作し、`OperationLog` に記録されることを、`Program.cs` 内で `case ConsoleKey.Delete:` および `ShowConfirm(` 呼び出しを検索して確認する。
+- [x] Phase 5 完了条件の再検証: `Ctrl+W` による分割トグルと `Tab` によるフォーカス移動が動作し、`ScreenState.Panes`/`FocusedPane` が存在することを `grep -n "FocusedPane" Program.cs` で確認する。
 
 この計画と spec に書かれていない判断が必要になったら、自分で決めずに「未解決事項」に記録してそのステップを保留し、次の独立したタスクに進むか停止すること。
 
@@ -29,7 +29,7 @@
 - Modify: `Program.cs`(`sealed class Column` 定義)
 - Test: `Zurari.Tests/MarkStateTests.cs`(新規作成)
 
-- [ ] `Program.cs` の `sealed class Column` に `Marked` フィールドを追加する。既存の `Column` クラス定義（`public string Path;` から始まるフィールド群とコンストラクタ）に以下を追加する。
+- [x] `Program.cs` の `sealed class Column` に `Marked` フィールドを追加する。既存の `Column` クラス定義（`public string Path;` から始まるフィールド群とコンストラクタ）に以下を追加する。
 
 ```csharp
 sealed class Column
@@ -68,9 +68,9 @@ sealed class Column
 
   - 変更点は `Marked` フィールド宣言1行と、コンストラクタ内の初期化1行のみ。既存フィールドの順序・型は変更しない。
 
-- [ ] `dotnet build Zurari.csproj` を実行し、exit 0 を確認する（`Column` を構築している既存箇所は初期化子付きコンストラクタを通るため、ここでは壊れないはず）。
+- [x] `dotnet build Zurari.csproj` を実行し、exit 0 を確認する（`Column` を構築している既存箇所は初期化子付きコンストラクタを通るため、ここでは壊れないはず）。
 
-- [ ] `Program.cs` に `MarkHelper` 静的クラスを新設する。既存の `NavigationHelper` の直後（`static class NavigationHelper { ... }` の閉じ `}` の直後）に挿入する。
+- [x] `Program.cs` に `MarkHelper` 静的クラスを新設する。既存の `NavigationHelper` の直後（`static class NavigationHelper { ... }` の閉じ `}` の直後）に挿入する。
 
 ```csharp
 static class MarkHelper
@@ -109,7 +109,7 @@ static class MarkHelper
 }
 ```
 
-- [ ] `Zurari.Tests/MarkStateTests.cs` を新規作成し、`ToggleMarkAndAdvance` / `ClearAll` / `ReconcileAfterReload` を検証する（`NavigationTests.cs` と同じ `MakeColumn` パターンを踏襲）。
+- [x] `Zurari.Tests/MarkStateTests.cs` を新規作成し、`ToggleMarkAndAdvance` / `ClearAll` / `ReconcileAfterReload` を検証する（`NavigationTests.cs` と同じ `MakeColumn` パターンを踏襲）。
 
 ```csharp
 using System.Collections.Generic;
@@ -211,9 +211,9 @@ public class MarkStateTests
 }
 ```
 
-- [ ] `dotnet test Zurari.Tests/Zurari.Tests.csproj` を実行し、`MarkStateTests` の全ケースが `Passed!` になることを確認する（この時点では `GetOperationTargets` 等はまだ実装していないため、他のテストクラスに影響がないことも確認する）。
+- [x] `dotnet test Zurari.Tests/Zurari.Tests.csproj` を実行し、`MarkStateTests` の全ケースが `Passed!` になることを確認する（この時点では `GetOperationTargets` 等はまだ実装していないため、他のテストクラスに影響がないことも確認する）。
 
-- [ ] コミット: `git add Program.cs Zurari.Tests/MarkStateTests.cs && git commit -m "feat: add Column.Marked and MarkHelper for multi-mark state"`
+- [x] コミット: `git add Program.cs Zurari.Tests/MarkStateTests.cs && git commit -m "feat: add Column.Marked and MarkHelper for multi-mark state"`
 
 ---
 
@@ -222,7 +222,7 @@ public class MarkStateTests
 **Files:**
 - Modify: `Program.cs`(`RefreshCurrentAsync`。分割後は Pane 対応の再読込関数も同様に変更）
 
-- [ ] `RefreshCurrentAsync` を読む（現状 `Program.cs` の `static async Task RefreshCurrentAsync()` 内、`Column refreshed = await CreateColumnAsync(currentPath, CancellationToken.None);` の直後で `Columns[State.ActiveColumn] = refreshed;` により **Column インスタンスそのものを差し替えている**）。この差し替えが Marked 消失の発生源であるため、差し替え直前に旧 `Marked` を新インスタンスへ引き継いだ上で突合する。
+- [x] `RefreshCurrentAsync` を読む（現状 `Program.cs` の `static async Task RefreshCurrentAsync()` 内、`Column refreshed = await CreateColumnAsync(currentPath, CancellationToken.None);` の直後で `Columns[State.ActiveColumn] = refreshed;` により **Column インスタンスそのものを差し替えている**）。この差し替えが Marked 消失の発生源であるため、差し替え直前に旧 `Marked` を新インスタンスへ引き継いだ上で突合する。
 
 ```csharp
     static async Task RefreshCurrentAsync()
@@ -249,13 +249,13 @@ public class MarkStateTests
 
   - Phase 5 完了後は `Columns`/`State.ActiveColumn` が `pane.Columns`/`pane.ActiveColumn` に置き換わっている想定。その場合も同じ位置（`Column refreshed = await CreateColumnAsync(...)` の直後、コレクションへの代入の直前）に同じ2行（`refreshed.Marked = current.Marked;` / `MarkHelper.ReconcileAfterReload(refreshed);`）を挿入する。関数名・シグネチャは実装済みのものに合わせる。
 
-- [ ] 同様の「`Column` インスタンス差し替え」パターンが他にないか確認する。`grep -n "= await CreateColumnAsync\|= CreateColumn(" Program.cs` を実行し、`RebuildRightSideAsync` 内で右側カラムを新規生成している箇所（`Column next = await CreateColumnAsync(nextPath, CancellationToken.None);` 等、`Program.cs:3291` 付近）を確認する。これらは**新しいディレクトリへ移動した際の新規カラム生成**であり、旧カラムのマークを引き継ぐ対象ではない（マークは「そのディレクトリの表示」に属し、移動先の別ディレクトリには無関係）。よって変更不要であることをコメントで明示する必要はないが、実行セッションは誤って全カラム生成箇所に `Marked` 引き継ぎを追加しないこと。**引き継ぎが必要なのは「同じ `Path` を指すカラムを再読込する」経路（`RefreshCurrentAsync` および F5/Ctrl+L のキー経路、将来 Phase 7 のジョブ完了時再読込）のみ**である。
+- [x] 同様の「`Column` インスタンス差し替え」パターンが他にないか確認する。`grep -n "= await CreateColumnAsync\|= CreateColumn(" Program.cs` を実行し、`RebuildRightSideAsync` 内で右側カラムを新規生成している箇所（`Column next = await CreateColumnAsync(nextPath, CancellationToken.None);` 等、`Program.cs:3291` 付近）を確認する。これらは**新しいディレクトリへ移動した際の新規カラム生成**であり、旧カラムのマークを引き継ぐ対象ではない（マークは「そのディレクトリの表示」に属し、移動先の別ディレクトリには無関係）。よって変更不要であることをコメントで明示する必要はないが、実行セッションは誤って全カラム生成箇所に `Marked` 引き継ぎを追加しないこと。**引き継ぎが必要なのは「同じ `Path` を指すカラムを再読込する」経路（`RefreshCurrentAsync` および F5/Ctrl+L のキー経路、将来 Phase 7 のジョブ完了時再読込）のみ**である。
 
-- [ ] `dotnet build Zurari.csproj` で exit 0 を確認する。
+- [x] `dotnet build Zurari.csproj` で exit 0 を確認する。
 
 - [ ] 手動確認手順: アプリを起動し、あるディレクトリでいくつかのファイルに `Space` でマークを付ける（Task 3 実装後に確認可能。この時点ではビルドが通ることのみ確認し、手動確認は Task 3 完了後にまとめて行う）。
 
-- [ ] コミット: `git add Program.cs && git commit -m "fix: preserve and reconcile Column.Marked across reload"`
+- [x] コミット: `git add Program.cs && git commit -m "fix: preserve and reconcile Column.Marked across reload"`
 
 ---
 
@@ -264,7 +264,7 @@ public class MarkStateTests
 **Files:**
 - Modify: `Program.cs`(`HandleSpecialKeyAsync`)
 
-- [ ] `HandleSpecialKeyAsync` の `switch (key.Key)` に `case ConsoleKey.Spacebar:` を追加する。挿入位置は `case ConsoleKey.F3:` の直前（キー割当表の並びに合わせる。挿入順序自体は動作に影響しない）。`::DRIVES::` カラムでは無効とする（spec「複数マーク設計」節: マークはファイル/ディレクトリの操作対象であり、ドライブ一覧に対する意味を持たない）。Shift 修飾の有無で「全解除」と「トグル+前進」を分岐する。
+- [x] `HandleSpecialKeyAsync` の `switch (key.Key)` に `case ConsoleKey.Spacebar:` を追加する。挿入位置は `case ConsoleKey.F3:` の直前（キー割当表の並びに合わせる。挿入順序自体は動作に影響しない）。`::DRIVES::` カラムでは無効とする（spec「複数マーク設計」節: マークはファイル/ディレクトリの操作対象であり、ドライブ一覧に対する意味を持たない）。Shift 修飾の有無で「全解除」と「トグル+前進」を分岐する。
 
 ```csharp
             case ConsoleKey.Spacebar:
@@ -294,9 +294,9 @@ public class MarkStateTests
   - `UpdateHorizontalScroll()` とプレビュー再ロードは、既存の `PageUp`/`PageDown`/`Home`/`End` と同様に「カーソルが動いたら呼ぶ」という既存パターンに合わせている（`Program.cs:1993-2019` を参照）。`Shift+Space`(全解除)はカーソルを動かさないため、これらの呼び出しは不要。
   - Phase 5 完了後、`HandleSpecialKeyAsync` が `Pane pane` を引数に取る形にリファクタリングされている場合は、`Columns[State.ActiveColumn]` を `pane.Columns[pane.ActiveColumn]` に読み替えて同じロジックを挿入する。
 
-- [ ] `ConsoleKey.Spacebar` が既存の `switch` 内の他ケースと衝突しないことを確認する: `grep -n "ConsoleKey.Spacebar" Program.cs` で重複がないことを確認する。
+- [x] `ConsoleKey.Spacebar` が既存の `switch` 内の他ケースと衝突しないことを確認する: `grep -n "ConsoleKey.Spacebar" Program.cs` で重複がないことを確認する。
 
-- [ ] `dotnet build Zurari.csproj` で exit 0 を確認する。
+- [x] `dotnet build Zurari.csproj` で exit 0 を確認する。
 
 - [ ] 手動確認手順:
   1. アプリを起動し、ファイルが3件以上あるディレクトリへ移動する。
@@ -304,7 +304,7 @@ public class MarkStateTests
   3. `Shift+Space` を押す。**期待動作**: マークが解除される(Task 4 実装後は `*` が消えることで視認できる)。カーソル位置は変化しない。
   4. `::DRIVES::` カラム（ドライブ一覧）にカーソルがある状態で `Space` を押す。**期待動作**: 何も起きない（クラッシュしない、マークもされない）。
 
-- [ ] コミット: `git add Program.cs && git commit -m "feat: add Space/Shift+Space key handling for marks"`
+- [x] コミット: `git add Program.cs && git commit -m "feat: add Space/Shift+Space key handling for marks"`
 
 ---
 
@@ -313,13 +313,13 @@ public class MarkStateTests
 **Files:**
 - Modify: `Program.cs`(`DrawColumnToLines`)
 
-- [ ] `DrawColumnToLines` を読む。エントリ1件を描画する本体ループは2箇所ある。
+- [x] `DrawColumnToLines` を読む。エントリ1件を描画する本体ループは2箇所ある。
   - Leap モード中の分岐（`if (inLeap && leapVisible != null) { ... }`、`Program.cs:3586` 付近）。
   - 通常/検索モードの分岐（`else { ... }`、`Program.cs:3626` 付近）。
 
   spec の「複数マーク設計」節は Leap/Search モード中のマーク**操作**は不可としているが、マーク済みエントリの**表示**（`*` プレフィックス）は Leap/Search モード中も維持されるべきである（マークはカラムに属する状態であり、モードによって消えるものではない）。したがって両方の分岐にマーク表示ロジックを追加する。
 
-- [ ] 通常/検索モード分岐（`Program.cs:3629` の `for (int i = 0; i < visibleHeight; i++)` ループ内）を変更する。変更前:
+- [x] 通常/検索モード分岐（`Program.cs:3629` の `for (int i = 0; i < visibleHeight; i++)` ループ内）を変更する。変更前:
 
 ```csharp
                 string text = column.Entries[scrollOffset + i];
@@ -438,7 +438,7 @@ public class MarkStateTests
   - `isCurrentMatch`/`isSelected` の背景色分岐では `markGlyph`(色なし生文字)をそのまま `displayText` に含める。背景色・文字色は行全体に一括適用されるため、`*` だけを別色にすると `\x1b[0m` リセットが背景色を巻き込み崩れる。spec の「カーソル強調を優先しつつ `*` は残す」はこの「背景色分岐では無色の `*` を残す」という解釈で満たす。
   - `isOtherMatch`/通常分岐では `*` を独立して ANSI 93 で色付けする（`\x1b[93m*\x1b[0m`）。非フォーカス時の減光は次のステップで扱う。
 
-- [ ] **非フォーカスペインの減光規則**: spec は Phase 5 で「非フォーカスペインは減光パレット（ANSI 90 系）」を導入済みである前提。`DrawColumnToLines` の呼び出し元（`BuildFrame` または Phase 5 で導入されたペイン描画ラッパー）が「どちらのパレットを使うか」を bool 引数として渡している場合、その bool（例: `bool dimmed`）を `DrawColumnToLines` のシグネチャに追加で受け取り、マーク色を次のように出し分ける。
+- [x] **非フォーカスペインの減光規則**: spec は Phase 5 で「非フォーカスペインは減光パレット（ANSI 90 系）」を導入済みである前提。`DrawColumnToLines` の呼び出し元（`BuildFrame` または Phase 5 で導入されたペイン描画ラッパー）が「どちらのパレットを使うか」を bool 引数として渡している場合、その bool（例: `bool dimmed`）を `DrawColumnToLines` のシグネチャに追加で受け取り、マーク色を次のように出し分ける。
 
 ```csharp
                 string coloredMark = isMarked ? (dimmed ? "\x1b[90m*\x1b[0m" : "\x1b[93m*\x1b[0m") : "";
@@ -446,7 +446,7 @@ public class MarkStateTests
 
   上記の3箇所（`isOtherMatch` 分岐、通常分岐）の `coloredMark` 行をこの出し分け版に置き換える。`dimmed` 引数の実際の名前・受け渡し経路は Phase 5 の実装（`DrawColumnToLines` の既存シグネチャに減光 bool がすでに追加されているはず）に合わせる。**Phase 5 の実装を確認せずに新しい bool 引数を独自に追加しないこと** — 既存のシグネチャ変更箇所を `grep -n "DrawColumnToLines" Program.cs` で確認し、既にある減光 bool 引数名をそのまま使うこと。もし Phase 5 が減光 bool を渡していない場合（前提条件チェックで Phase 5 未完了が判明した場合と同様）、このステップは保留して「未解決事項」に記録する。
 
-- [ ] Leap モード分岐（`Program.cs:3586` 付近の `if (inLeap && leapVisible != null) { ... }`）にも同様の `*` 表示を追加する。変更前:
+- [x] Leap モード分岐（`Program.cs:3586` 付近の `if (inLeap && leapVisible != null) { ... }`）にも同様の `*` 表示を追加する。変更前:
 
 ```csharp
                 int absIdx = leapVisible[vi];
@@ -513,14 +513,14 @@ public class MarkStateTests
 
   - Leap モードの非フォーカスペインでの減光出し分けも、通常モードと同じ `dimmed` 引数（Phase 5 実装済みの引数名）を使って `coloredMark` を出し分ける。Phase 5 未完了の場合は同様に保留する。
 
-- [ ] `dotnet build Zurari.csproj` で exit 0 を確認する。
+- [x] `dotnet build Zurari.csproj` で exit 0 を確認する。
 
 - [ ] 手動確認手順:
   1. ファイルが5件程度あるディレクトリで `Space` を2回押す。**期待画面**: 1件目・2件目の行頭に `*` が黄色（ANSI 93）で表示され、カーソルは3件目にある。
   2. マーク済みエントリにカーソルを重ねる（矢印キーでカーソルをマーク済み行に戻す）。**期待画面**: カーソル背景色（白 or グレー背景）は通常通り表示され、`*` は背景色の上にそのまま残る（色は反転してよい。spec の要求は「`*` が残ること」であり色の可読性は背景色分岐の既存ルールに従う）。
   3. `Ctrl+W` で分割し、非フォーカスペイン側でマークを事前に付けておく（フォーカス移動前にマークしておく）。**期待画面**: 非フォーカスペインのマーク `*` はグレー系（ANSI 90）で表示される。
 
-- [ ] コミット: `git add Program.cs && git commit -m "feat: render mark glyph with ANSI 93/90 in DrawColumnToLines"`
+- [x] コミット: `git add Program.cs && git commit -m "feat: render mark glyph with ANSI 93/90 in DrawColumnToLines"`
 
 ---
 
@@ -529,15 +529,15 @@ public class MarkStateTests
 **Files:**
 - Modify: `Program.cs`(`DrawColumnToLines` 冒頭の `maxEntryWidth` 計算箇所)
 
-- [ ] Task 4 の変更で、`entry` のトランケート幅はすでに `isMarked ? maxEntryWidth - 1 : maxEntryWidth` としてエントリ単位で調整済みである。これは spec の「名前の表示幅計算では `*` の1桁分を差し引く」を満たす最小限の変更であり、`maxEntryWidth` 自体（`Program.cs:3543` 付近、`int maxEntryWidth = contentSlot - 2;` — 全エントリ共通の「2文字プレフィックス分」を差し引く既存の計算）はマーク有無に関わらず一定のプレフィックス幅（`"> "` 等の2文字)を前提にしているため変更しない。
+- [x] Task 4 の変更で、`entry` のトランケート幅はすでに `isMarked ? maxEntryWidth - 1 : maxEntryWidth` としてエントリ単位で調整済みである。これは spec の「名前の表示幅計算では `*` の1桁分を差し引く」を満たす最小限の変更であり、`maxEntryWidth` 自体（`Program.cs:3543` 付近、`int maxEntryWidth = contentSlot - 2;` — 全エントリ共通の「2文字プレフィックス分」を差し引く既存の計算）はマーク有無に関わらず一定のプレフィックス幅（`"> "` 等の2文字)を前提にしているため変更しない。
   - 確認: `maxEntryWidth` を変更すると、マークなしエントリの表示幅まで狭まってしまい、マークの有無で全エントリのレイアウトが変わってしまう（spec が意図する挙動ではない）。したがって「共通の `maxEntryWidth` からマーク時のみ追加で1桁引く」という Task 4 の方式が正しい。このタスクは Task 4 の実装が正しく行われていることの確認のみで、追加のコード変更はない。
   - `grep -n "int maxEntryWidth = contentSlot - 2;" Program.cs` を実行し、1箇所のみ存在すること（Leap 分岐・通常分岐で共有されていること）を確認する。
 
 - [ ] 幅計算の境界値確認（手動）: `ColumnWidth`(32) 相当の狭いカラムで、ファイル名がちょうど `maxEntryWidth` 文字（全角なし）のエントリにマークを付ける。**期待画面**: マーク時は末尾が1文字分省略される（`SmartTruncate` の `…` 省略記号が現れるか、境界ちょうどなら1文字減る）。マークなし時と比べて行の右端がはみ出さないこと（列崩れがないこと）を目視確認する。
 
-- [ ] `dotnet build Zurari.csproj` で exit 0 を確認する。
+- [x] `dotnet build Zurari.csproj` で exit 0 を確認する。
 
-- [ ] コミット不要（Task 4 に含まれる。このタスクは検証のみのため、コード変更があった場合のみ `git add Program.cs && git commit -m "fix: adjust maxEntryWidth accounting for mark glyph"` を実行する）。
+- [x] コミット不要（Task 4 に含まれる。このタスクは検証のみのため、コード変更があった場合のみ `git add Program.cs && git commit -m "fix: adjust maxEntryWidth accounting for mark glyph"` を実行する）。
 
 ---
 
@@ -547,9 +547,9 @@ public class MarkStateTests
 - Modify: `Program.cs`(削除処理箇所。`ShowConfirm` を呼んでいる `case ConsoleKey.Delete:` 相当のハンドラ、および削除実行関数)
 - Test: `Zurari.Tests/MarkStateTests.cs`(追記)
 
-- [ ] 削除処理の現状箇所を確認する: `grep -n "ConsoleKey.Delete\|case ConsoleKey.D:" Program.cs` および `grep -n "ShowConfirm" Program.cs` で、Phase 4 実装済みの削除ハンドラの正確な関数名・呼び出し形を特定する。以降のコード例は spec の API 契約（`ShowConfirm(string title, string message, Action<bool?> onResult)`、`RecycleBin.TrySend(string path, out string error)`、`OperationLog.Append(OpLogEntry)`）に基づく想定コードであり、実際の変数名・関数名は Phase 4 実装済みコードに合わせて読み替えること。
+- [x] 削除処理の現状箇所を確認する: `grep -n "ConsoleKey.Delete\|case ConsoleKey.D:" Program.cs` および `grep -n "ShowConfirm" Program.cs` で、Phase 4 実装済みの削除ハンドラの正確な関数名・呼び出し形を特定する。以降のコード例は spec の API 契約（`ShowConfirm(string title, string message, Action<bool?> onResult)`、`RecycleBin.TrySend(string path, out string error)`、`OperationLog.Append(OpLogEntry)`）に基づく想定コードであり、実際の変数名・関数名は Phase 4 実装済みコードに合わせて読み替えること。
 
-- [ ] `static List<string> GetOperationTargets(Pane pane)` を新設する。挿入位置は `MarkHelper` 静的クラスの直後。
+- [x] `static List<string> GetOperationTargets(Pane pane)` を新設する。挿入位置は `MarkHelper` 静的クラスの直後。
 
 ```csharp
     // 操作対象の組み立て規則(spec「複数マーク設計」節):
@@ -585,7 +585,7 @@ public class MarkStateTests
   - `BuildFullPath(string columnPath, string entryName)` という名前のフルパス組み立てヘルパが既存コードに存在するか `grep -n "BuildFullPath\|GetCurrentFullPath\|Path.Combine" Program.cs` で確認する。既存の同等ロジック（例えば現在の削除処理内でカーソル下1件のフルパスを組み立てている式）をそのまま関数化するか、既存の private ヘルパ名に置き換えること。エントリ名の末尾 `/` サフィックス（ディレクトリ）の扱いも既存ロジックに合わせ、新規に別ルールを作らない。
   - `Pane` 型が Phase 1 で導入されている前提（`pane.Columns`, `pane.ActiveColumn`）。Phase 1 未完了の場合は「未解決事項」に記録し、`static List<string> GetOperationTargets()`(引数なし、`Columns`/`State.ActiveColumn` を直接参照する版)への読み替えが必要である旨を記す。
 
-- [ ] 既存の削除ハンドラを `GetOperationTargets(pane)` 経由に変更する。確認ダイアログのメッセージに対象件数を表示する。想定コード（Phase 4 実装済みの削除ハンドラを次のように置き換える。実際の変数名は現行コードに合わせる）:
+- [x] 既存の削除ハンドラを `GetOperationTargets(pane)` 経由に変更する。確認ダイアログのメッセージに対象件数を表示する。想定コード（Phase 4 実装済みの削除ハンドラを次のように置き換える。実際の変数名は現行コードに合わせる）:
 
 ```csharp
             case ConsoleKey.Delete:
@@ -644,7 +644,7 @@ public class MarkStateTests
   - 単一件（マークなし・カーソル下1件）のときはファイル名を明示したメッセージ、複数件（マークあり）のときは件数のみのメッセージという spec 通りの文言分岐にする。
   - `d` キー（文字キー）で同じハンドラを呼んでいる既存コードがあれば同様に置き換える。`grep -n "'d'\|KeyChar == 'd'" Program.cs` で確認する。
 
-- [ ] `GetOperationTargets` のユニットテストを `Zurari.Tests/MarkStateTests.cs` に追記する。`Pane` 型が存在する前提でテストを書く。`GetOperationTargets` は `internal static` のため、`InternalsVisibleTo("Zurari.Tests")` 経由で `Program.GetOperationTargets(pane)` を直接呼び出せる。
+- [x] `GetOperationTargets` のユニットテストを `Zurari.Tests/MarkStateTests.cs` に追記する。`Pane` 型が存在する前提でテストを書く。`GetOperationTargets` は `internal static` のため、`InternalsVisibleTo("Zurari.Tests")` 経由で `Program.GetOperationTargets(pane)` を直接呼び出せる。
 
 ```csharp
     static Pane MakePane(Column column)
@@ -696,15 +696,15 @@ public class MarkStateTests
     }
 ```
 
-- [ ] `dotnet build Zurari.csproj` で exit 0 を確認する。
-- [ ] `dotnet test Zurari.Tests/Zurari.Tests.csproj` で全緑を確認する。
+- [x] `dotnet build Zurari.csproj` で exit 0 を確認する。
+- [x] `dotnet test Zurari.Tests/Zurari.Tests.csproj` で全緑を確認する。
 
 - [ ] 手動確認手順:
   1. ファイル3件をマークし、`d` を押す。**期待画面**: 確認ダイアログに「3件を削除しますか?(ごみ箱へ)」と表示される。
   2. `Y` で確定する。**期待動作**: 3件がごみ箱へ送られ、カラムが再読込され、ステータス行に「削除完了: 3件」が表示される。
   3. マークなしでカーソルを1件のファイルに合わせ `d` を押す。**期待画面**: 確認ダイアログに「「<ファイル名>」を削除しますか?(ごみ箱へ)」と表示される（件数表示ではなくファイル名表示）。
 
-- [ ] コミット: `git add Program.cs Zurari.Tests/MarkStateTests.cs && git commit -m "feat: route delete through GetOperationTargets with count-aware confirmation"`
+- [x] コミット: `git add Program.cs Zurari.Tests/MarkStateTests.cs && git commit -m "feat: route delete through GetOperationTargets with count-aware confirmation"`
 
 ---
 
@@ -713,7 +713,7 @@ public class MarkStateTests
 **Files:**
 - Modify: `Program.cs`(`BuildFrame` の通常ヒント分岐)
 
-- [ ] `BuildFrame` 内、ステータス行を組み立てる `else`（Leap でも Search でも `_lastErrorMessage` でもない、通常ヒント）分岐（`Program.cs:3498` 付近）を変更する。変更前:
+- [x] `BuildFrame` 内、ステータス行を組み立てる `else`（Leap でも Search でも `_lastErrorMessage` でもない、通常ヒント）分岐（`Program.cs:3498` 付近）を変更する。変更前:
 
 ```csharp
         else
@@ -753,7 +753,7 @@ public class MarkStateTests
   - Phase 5 完了後は `Columns[State.ActiveColumn]` を `FocusedPane.Columns[FocusedPane.ActiveColumn]` に読み替える。
   - `CharacterWidth.SmartTruncate` が末尾で切り詰めるため、マーク件数表示が幅超過時に省略されても崩れない（既存の省略ロジックをそのまま使う）。
 
-- [ ] `dotnet build Zurari.csproj` で exit 0 を確認する。
+- [x] `dotnet build Zurari.csproj` で exit 0 を確認する。
 
 - [ ] 手動確認手順:
   1. マークなしの状態でステータス行を確認する。**期待画面**: 「M件マーク中」は表示されない。
@@ -761,7 +761,7 @@ public class MarkStateTests
   3. `Shift+Space` で全解除する。**期待画面**: 「M件マーク中」が消える。
   4. Leap モード中・Search モード中はマークがあってもこの追記が出ない（Leap バー/Search バーがステータス行を占有するため）ことを確認する。
 
-- [ ] コミット: `git add Program.cs && git commit -m "feat: show marked count in normal status hint"`
+- [x] コミット: `git add Program.cs && git commit -m "feat: show marked count in normal status hint"`
 
 ---
 
@@ -773,14 +773,19 @@ public class MarkStateTests
 - [ ] マーク済みエントリは `*` プレフィックス+ANSI 93(フォーカス時)/ANSI 90(非フォーカス時)で表示される。
 - [ ] マーク時の名前表示幅が `*` の1桁分正しく縮小され、列崩れがない。
 - [ ] カラム再読込（`RefreshCurrentAsync` 経由）後も、`Entries` に残っている名前のマークは維持され、消えた名前のマークのみ除去される。
-- [ ] `GetOperationTargets` が「マークがあればマーク集合（`Entries` 順・フルパス）、なければカーソル下1件」を返す。
+- [x] `GetOperationTargets` が「マークがあればマーク集合（`Entries` 順・フルパス）、なければカーソル下1件」を返す。
 - [ ] 削除(`d`/`Delete`)が `GetOperationTargets` 経由になり、複数件時は「N件を削除しますか?(ごみ箱へ)」、単一件時はファイル名表示の確認ダイアログを経て動作する。
 - [ ] 削除成功後、成功したエントリのマークのみ解除される（失敗分は維持）。
 - [ ] ステータス行の通常ヒント時のみ「M件マーク中」が追記され、Leap/Search/エラー表示中には出ない。
-- [ ] `MarkStateTests.cs` の全ケース（トグル、全解除、再読込突合、`GetOperationTargets` の規則）が `dotnet test` で緑。
-- [ ] 既存の全ユニットテストが緑のまま。
-- [ ] `dotnet build Zurari.csproj` が exit 0。
+- [x] `MarkStateTests.cs` の全ケース（トグル、全解除、再読込突合、`GetOperationTargets` の規則）が `dotnet test` で緑。
+- [x] 既存の全ユニットテストが緑のまま。
+- [x] `dotnet build Zurari.csproj` が exit 0。
 
 ## 未解決事項
 
-(実行セッションが判断保留を記録する欄。空のまま残すこと)
+- **Phase 1〜5 実装済みを確認**: 計画作成時点(2026-07-06)の申し送りとは異なり、実行時点(2026-07-23)では Phase 1〜5 は既に実装済みだった(`sealed class Pane`(494行)、`ScreenState.SplitActive`/`FocusedPane`、`HandleSpecialKeyAsync(Pane pane, ConsoleKeyInfo key)`、`ShowConfirm`/`RecycleBin`/`OperationLog` すべて存在)。よって計画のコード断片はほぼそのまま適用できた。
+- **`GetOperationTargets` の配置場所を計画の指示から調整**: 計画は「`MarkHelper` 静的クラスの直後」への挿入を指示していたが、`MarkHelper`/`NavigationHelper` は `static class Program`(2156行〜)より前に定義された独立の top-level static class であり、テストが `Program.GetOperationTargets(pane)` として呼び出す契約上、`GetOperationTargets` は `Program` クラスのメンバでなければならない。実際には `Program` クラス内、削除処理群(`SelectedIsDeletable` 等)の直前に配置した。
+- **再読込時のマーク引き継ぎを `RefreshCurrentAsync` 以外にもう1箇所追加**: 計画は `RefreshCurrentAsync` のみを明示していたが、`ExecuteRenameAsync` 内のリネーム成功パス(`Program.cs` 内、リネーム後に `col.Path` を再読込して `RestoreTo` を設定する箇所)も同じ「同一 `Path` を指す `Column` インスタンスの差し替え」パターンであり、計画が定義した「引き継ぎが必要な経路」の基準に該当する。ここで引き継ぎを行わないと、複数マーク中に1件だけをリネームした場合、他の正常なマークまで巻き添えで消えてしまう回帰が生じるため、`RefreshCurrentAsync` と同じ2行(`refreshed.Marked = col.Marked; MarkHelper.ReconcileAfterReload(refreshed);`)をここにも追加した。
+- **`<No file>`(空ディレクトリのプレースホルダ)をマーク対象から除外する処理を追加**: 計画のコード断片には記載がなかったが、既存コードには空ディレクトリを表示するための `"<No file>"` という実在しないプレースホルダエントリが存在する(`SelectedIsDeletable` が削除対象から除外している箇所で発見)。この存在を考慮せずに実装すると、空ディレクトリで `Space` を押した際にプレースホルダ文字列がマークされ、`GetOperationTargets` 経由で実在しない削除対象としてごみ箱送りが試行される(失敗はするが誤動作)。`MarkHelper.ToggleMarkAndAdvance` の先頭に `"<No file>"` を除外するガードを追加し、テスト(`ToggleMarkAndAdvance_NoFilePlaceholder_NoOp`/`GetOperationTargets_NoFilePlaceholder_ReturnsEmpty`)で確認した。
+- **削除完了メッセージの挙動変化**: 従来、単一ファイル削除の成功時は `_lastErrorMessage` を `null` のままにして何も表示していなかったが、計画のコード例に合わせて成功時は常に「削除完了: N件」を表示するよう変更した(単一件でも「削除完了: 1件」が出るようになる)。UI上の軽微な追加であり退行ではないと判断したが、記録として残す。
+- **手動確認(Task 2/3/4/5/6/7 内の「手動確認手順」、および完了条件チェックリストの一部項目)は本セッションでは未実施**: 本実行環境(サンドボックス化された非対話シェル)には実コンソールハンドルが割り当てられておらず、`dotnet bin/Debug/net8.0/zrr.dll` を試みると `Console.WindowHeight` アクセスで `System.IO.IOException: ハンドルが無効です` が発生し起動できないことを確認した(Phase 5 の完了記録と同様の環境制約であり、本 Phase の実装に起因する回帰ではない)。`dotnet build`/`dotnet test`(130/130 pass)による自動検証とコードレビューでの整合性確認は完了しているが、完了条件チェックリストのうち目視・対話操作を要する項目(`Space`/`Shift+Space` の実際の見た目と挙動、`*` の色、列崩れの有無、削除確認ダイアログの実際の文言と動作、ステータス行の表示切り替え等)はチェックを入れずに残した。ユーザーが実ターミナルで `dotnet run --project Zurari.csproj` を実行して確認し、該当項目にチェックを入れることを想定する(Phase 5 の `808358d`/`c71a04a` と同様の扱い)。
