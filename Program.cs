@@ -287,6 +287,41 @@ static class NavigationHelper
     }
 }
 
+static class MarkHelper
+{
+    // カーソル下エントリのマークをトグルし、カーソルを1つ下へ移動する。
+    // ::DRIVES:: カラムでは呼び出し禁止(呼び出し側で判定する)。
+    public static void ToggleMarkAndAdvance(Column column)
+    {
+        if (column.Entries.Count == 0) return;
+        if (column.Selected < 0 || column.Selected >= column.Entries.Count) return;
+
+        string name = column.Entries[column.Selected];
+        if (column.Marked.Contains(name))
+            column.Marked.Remove(name);
+        else
+            column.Marked.Add(name);
+
+        if (column.Selected < column.Entries.Count - 1)
+            column.Selected++;
+    }
+
+    // アクティブカラムの全マーク解除。
+    public static void ClearAll(Column column)
+    {
+        column.Marked.Clear();
+    }
+
+    // 再読込後の Entries に存在しなくなった名前を Marked から除去する。
+    // 名前ベース突合により、ソート順の変化や新規追加には影響されない。
+    public static void ReconcileAfterReload(Column column)
+    {
+        if (column.Marked.Count == 0) return;
+        var entrySet = new HashSet<string>(column.Entries, StringComparer.Ordinal);
+        column.Marked.RemoveWhere(name => !entrySet.Contains(name));
+    }
+}
+
 /// <summary>
 /// Thread-safe "redraw requested" latch. Background completions call Request();
 /// the main loop calls ShouldDraw() once per tick, consuming any pending request
@@ -469,6 +504,7 @@ sealed class Column
     public string? RestoreTo;
     public Dictionary<string, List<string>> CachedChildren;
     public DateTime CachedTime;
+    public HashSet<string> Marked;
 
     // Loading state for async operations
     public bool IsLoading { get; set; }
@@ -485,6 +521,7 @@ sealed class Column
         ScrollOffset = 0;
         CachedChildren = new Dictionary<string, List<string>>();
         CachedTime = DateTime.UtcNow;
+        Marked = new HashSet<string>(StringComparer.Ordinal);
         IsLoading = false;
         EntriesRead = 0;
         DirectoriesCount = 0;
