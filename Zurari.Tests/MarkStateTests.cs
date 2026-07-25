@@ -49,6 +49,51 @@ public class MarkStateTests
     }
 
     [Fact]
+    public void ToggleMarkAndRetreat_MarksEntryAndMovesCursorUp()
+    {
+        var c = MakeColumn(5, selected: 3);
+        MarkHelper.ToggleMarkAndRetreat(c);
+        Assert.Contains("file003.txt", c.Marked);
+        Assert.Equal(2, c.Selected);
+    }
+
+    [Fact]
+    public void ToggleMarkAndRetreat_TogglingMarkedEntryUnmarksIt()
+    {
+        var c = MakeColumn(5, selected: 4);
+        MarkHelper.ToggleMarkAndRetreat(c); // mark file004.txt, cursor -> 3
+        c.Selected = 4;                     // move back
+        MarkHelper.ToggleMarkAndRetreat(c); // unmark file004.txt, cursor -> 3
+        Assert.DoesNotContain("file004.txt", c.Marked);
+    }
+
+    [Fact]
+    public void ToggleMarkAndRetreat_AtFirstEntry_DoesNotRetreatPastStart()
+    {
+        var c = MakeColumn(3, selected: 0);
+        MarkHelper.ToggleMarkAndRetreat(c);
+        Assert.Contains("file000.txt", c.Marked);
+        Assert.Equal(0, c.Selected);
+    }
+
+    [Fact]
+    public void ToggleMarkAndRetreat_EmptyColumn_NoOp()
+    {
+        var c = MakeColumn(0);
+        MarkHelper.ToggleMarkAndRetreat(c);
+        Assert.Empty(c.Marked);
+    }
+
+    [Fact]
+    public void ToggleMarkAndRetreat_NoFilePlaceholder_NoOp()
+    {
+        var c = new Column("test");
+        c.Entries.Add("<No file>");
+        MarkHelper.ToggleMarkAndRetreat(c);
+        Assert.Empty(c.Marked);
+    }
+
+    [Fact]
     public void ClearAll_RemovesAllMarks()
     {
         var c = MakeColumn(5);

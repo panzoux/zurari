@@ -293,19 +293,34 @@ static class MarkHelper
     // ::DRIVES:: カラムでは呼び出し禁止(呼び出し側で判定する)。
     public static void ToggleMarkAndAdvance(Column column)
     {
-        if (column.Entries.Count == 0) return;
-        if (column.Selected < 0 || column.Selected >= column.Entries.Count) return;
+        if (!ToggleMarkAtCursor(column)) return;
+        if (column.Selected < column.Entries.Count - 1)
+            column.Selected++;
+    }
+
+    // カーソル下エントリのマークをトグルし、カーソルを1つ上へ移動する(Space の逆方向)。
+    // ::DRIVES:: カラムでは呼び出し禁止(呼び出し側で判定する)。
+    public static void ToggleMarkAndRetreat(Column column)
+    {
+        if (!ToggleMarkAtCursor(column)) return;
+        if (column.Selected > 0)
+            column.Selected--;
+    }
+
+    // カーソル下エントリのマークをトグルする(カーソル移動なし)。トグルできた場合 true。
+    static bool ToggleMarkAtCursor(Column column)
+    {
+        if (column.Entries.Count == 0) return false;
+        if (column.Selected < 0 || column.Selected >= column.Entries.Count) return false;
 
         string name = column.Entries[column.Selected];
-        if (name == "<No file>") return; // 空ディレクトリのプレースホルダはマーク対象外
+        if (name == "<No file>") return false; // 空ディレクトリのプレースホルダはマーク対象外
 
         if (column.Marked.Contains(name))
             column.Marked.Remove(name);
         else
             column.Marked.Add(name);
-
-        if (column.Selected < column.Entries.Count - 1)
-            column.Selected++;
+        return true;
     }
 
     // アクティブカラムの全マーク解除。
@@ -2520,15 +2535,12 @@ static class Program
                     break;
 
                 if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
-                {
-                    MarkHelper.ClearAll(activeCol);
-                }
+                    MarkHelper.ToggleMarkAndRetreat(activeCol);
                 else
-                {
                     MarkHelper.ToggleMarkAndAdvance(activeCol);
-                    UpdateHorizontalScroll(pane);
-                    if (pane.Preview.IsVisible) StartPreviewLoad(pane);
-                }
+
+                UpdateHorizontalScroll(pane);
+                if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 break;
             }
 
@@ -2626,6 +2638,12 @@ static class Program
                     RequestRenameSelected(pane);
                 else if (key.KeyChar == 'h' && key.Modifiers == ConsoleModifiers.None)
                     RequestHistoryJump(pane);
+                else if (key.KeyChar == ':' && key.Modifiers == ConsoleModifiers.None)
+                {
+                    Column activeCol = pane.Columns[pane.ActiveColumn];
+                    if (activeCol.Path != "::DRIVES::")
+                        MarkHelper.ClearAll(activeCol);
+                }
                 break;
         }
     }
