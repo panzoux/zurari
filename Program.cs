@@ -893,7 +893,9 @@ static class JobManager
 
     public static void Cancel(int shortId)
     {
-        lock (_lock) { _jobs.Find(j => j.ShortId == shortId)?.Cts.Cancel(); }
+        BackgroundJob? job;
+        lock (_lock) { job = _jobs.Find(j => j.ShortId == shortId); }
+        job?.Cts.Cancel();
     }
 
     public static List<string> GetBusyPaths()
