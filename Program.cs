@@ -2621,6 +2621,7 @@ static class Program
     static string? _cachedJobSummary = null;
     static readonly Dictionary<int, JobStatus> _lastKnownJobStatus = new();
     static DateTime _lastActiveJobRefreshTime = DateTime.MinValue;
+    static bool _shouldExit = false;
     static string? _missingEntryMessage = null;
     static Column? _missingEntryColumn = null;
     static int _missingEntrySelected = -1;
@@ -2669,6 +2670,9 @@ static class Program
 
             while (true)
             {
+                if (_shouldExit)
+                    break;
+
                 HandleResizeIfNeeded(FocusedPane);
 
                 if (State.Dialog == null)
@@ -2745,7 +2749,23 @@ static class Program
                 switch (key.KeyChar)
                 {
                     case (char)27: // Esc
-                        return;
+                        if (JobManager.HasActiveJobs)
+                        {
+                            int activeCount = JobManager.Snapshot().FindAll(j => j.Status == JobStatus.Pending || j.Status == JobStatus.Running).Count;
+                            ShowConfirm("終了確認", $"実行中のジョブが{activeCount}件あります。すべてキャンセルして終了しますか?", async result =>
+                            {
+                                if (result == true)
+                                {
+                                    await JobManager.CancelAllAndWaitAsync(TimeSpan.FromSeconds(5));
+                                    _shouldExit = true;
+                                }
+                            });
+                        }
+                        else
+                        {
+                            return;
+                        }
+                        break;
 
                     default:
                         await HandleSpecialKeyAsync(focusedPane, key);
@@ -2755,6 +2775,9 @@ static class Program
         }
         finally
         {
+            if (JobManager.HasActiveJobs)
+                await JobManager.CancelAllAndWaitAsync(TimeSpan.FromSeconds(5));
+
             try { Console.CursorVisible = true; } catch { }
             Console.Write("\x1b[?1049l"); // Leave alternate screen buffer
             _migemo?.Dispose();
