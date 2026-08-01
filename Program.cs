@@ -3000,6 +3000,16 @@ static class Program
                 break;
             }
 
+            case ConsoleKey.C:
+                if (key.Modifiers == ConsoleModifiers.None)
+                    await StartCopyOrMoveAsync(pane, isMove: false);
+                break;
+
+            case ConsoleKey.M:
+                if (key.Modifiers == ConsoleModifiers.None)
+                    await StartCopyOrMoveAsync(pane, isMove: true);
+                break;
+
             case ConsoleKey.F3:
                 EnterLeapMode(pane);
                 break;
@@ -3101,6 +3111,91 @@ static class Program
                         MarkHelper.ClearAll(activeCol);
                 }
                 break;
+        }
+    }
+
+    static async Task StartCopyOrMoveAsync(Pane pane, bool isMove)
+    {
+        List<string> targets = GetOperationTargets(pane);
+        if (targets.Count == 0)
+        {
+            _lastErrorMessage = isMove ? "移動対象がありません" : "コピー対象がありません";
+            return;
+        }
+
+        string opName = isMove ? "移動" : "コピー";
+
+        if (State.SplitActive)
+        {
+            int otherPaneIndex = State.FocusedPane == 0 ? 1 : 0;
+            Pane otherPane = State.Panes[otherPaneIndex];
+            string destDir = otherPane.Columns[otherPane.ActiveColumn].Path;
+
+            if (destDir == "::DRIVES::")
+            {
+                _lastErrorMessage = "ドライブ一覧を宛先にはできません";
+                return;
+            }
+
+            EnqueueCopyOrMoveJob(opName, targets, destDir, isMove);
+        }
+        else
+        {
+            List<string> candidates = BuildBookmarkAndHistoryList();
+            ShowListSelect("宛先を選択", candidates, dest =>
+            {
+                if (dest == null)
+                {
+                    _lastErrorMessage = $"{opName}をキャンセルしました";
+                    return;
+                }
+                if (dest == "::DRIVES::")
+                {
+                    _lastErrorMessage = "ドライブ一覧を宛先にはできません";
+                    return;
+                }
+                EnqueueCopyOrMoveJob(opName, targets, dest, isMove);
+            });
+        }
+
+        await Task.CompletedTask;
+    }
+
+    static void EnqueueCopyOrMoveJob(string opName, List<string> targets, string destDir, bool isMove)
+    {
+        // busy パス警告(実行中ジョブと対象パスの重なり確認)は Phase 8 で本関数の冒頭に追加する。
+        // Phase 7 時点では警告なしで開始してよい(重なった場合の競合はエンジンの「失敗を記録して継続」が受け止める)。
+        BackgroundJob job = JobManager.Start(opName, targets, destDir, (jobRef, ct) =>
+        {
+            var progress = new JobFileOpProgress(jobRef);
+            Task<ConflictDecision?> OnConflict(string destName) => RequestConflictAsync(jobRef.ShortId, destName);
+            return isMove
+                ? FileOpEngine.MoveAsync(targets, destDir, progress, OnConflict, ct)
+                : FileOpEngine.CopyAsync(targets, destDir, progress, OnConflict, ct);
+        });
+
+        _lastErrorMessage = $"{opName}開始: {targets.Count}件 → {destDir} (#{job.ShortId})";
+    }
+
+    sealed class JobFileOpProgress : IFileOpProgress
+    {
+        readonly BackgroundJob _job;
+        public JobFileOpProgress(BackgroundJob job) { _job = job; }
+
+        public void Report(FileOpProgressInfo info)
+        {
+            lock (JobManager.ProgressLock)
+            {
+                _job.DoneCount = info.DoneCount;
+                _job.TotalCount = info.TotalCount;
+                _job.BytesTransferred = info.BytesTransferred;
+                _job.CurrentFile = info.CurrentFile;
+            }
+        }
+
+        public void ReportItemResult(OpLogEntry entry)
+        {
+            OperationLog.Append(entry with { JobId = _job.ShortId });
         }
     }
 
@@ -5075,6 +5170,22 @@ static class Program
                 if (selected == null) return;
                 await JumpToPathAsync(pane, selected);
             });
+    }
+
+    static List<string> BuildBookmarkAndHistoryList()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<string>();
+
+        foreach (string b in Bookmarks.Load())
+            if (seen.Add(b)) result.Add(b);
+
+        var historyNewestFirst = new List<string>(_history);
+        historyNewestFirst.Reverse();
+        foreach (string h in historyNewestFirst)
+            if (seen.Add(h)) result.Add(h);
+
+        return result;
     }
 
     static string? GetSelectedDirectory(Pane pane, int columnIndex)
