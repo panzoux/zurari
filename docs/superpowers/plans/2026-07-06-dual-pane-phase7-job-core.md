@@ -1456,22 +1456,36 @@ finally
 
 ## 完了条件チェックリスト
 
-- [ ] `c`/`m` が UI をブロックしない(登録直後に制御が返り、直後のキー入力・描画が即座に反応する)。
-- [ ] 単一ファイルのコピー/移動が完了する(Task 1, 4)。
-- [ ] マーク複数件のコピー/移動が完了する(Task 1, 4。対象組み立て関数がマーク集合を返すこと)。
-- [ ] ディレクトリ再帰のコピー/移動が完了する(Task 1 の `FileOpEngineTests`)。
-- [ ] 進捗がステータス行のジョブサマリに表示され、100ms 未満では再計算されない(Task 5)。
-- [ ] 衝突ダイアログが「上書き/すべて上書き/スキップ/すべてスキップ/リネーム」の5択で機能し、sticky が次回以降ダイアログを開かず即答する(Task 3)。
-- [ ] 衝突ダイアログの Esc がジョブ全体のキャンセルとして扱われる(Task 3 の `null` 結果 → Task 1 の `CopyOrMoveFileAsync` が `OperationCanceledException` に変換)。
-- [ ] 完了時に結果サマリが one-shot でステータス行に表示される(Task 6)。
-- [ ] 完了時に影響カラム(宛先・ソース親、`OrdinalIgnoreCase`)のみが再読込される(Task 6)。
-- [ ] Leap/Search アクティブなペインは自動再読込されず、モード終了時に反映される(Task 6、`ExitSearchMode`/`ExitLeapModeAsync` への追記)。
-- [ ] ファイル単位の結果が `OperationLog` に記録される(Task 1 の `ReportItemResult` 呼び出し + Task 4 の `JobFileOpProgress.ReportItemResult`)。
-- [ ] アクティブジョブがある状態の `Esc` で終了確認ダイアログが出て、Yes で全ジョブキャンセル+最大5秒待機後に終了する(Task 7)。
-- [ ] `FileOpEngine` と `JobManager` のユニットテスト(複数件・失敗継続・キャンセル・同時実行上限4・busy パス前方一致・完了20件保持)がすべて緑(Task 1, 2)。
-- [ ] `dotnet build Zurari.csproj` が最終状態で exit 0。
-- [ ] `dotnet test Zurari.Tests/Zurari.Tests.csproj` が最終状態で `Passed!`(全テスト)。
+- [x] `c`/`m` が UI をブロックしない(登録直後に制御が返り、直後のキー入力・描画が即座に反応する)。コード上確認済み(`JobManager.Start` は `Task.Run` を発火して同期的に return、`StartCopyOrMoveAsync` はダイアログ待ちを await しない)。実機での体感確認は未実施(下記未解決事項参照)。
+- [x] 単一ファイルのコピー/移動が完了する(Task 1, 4)。`FileOpEngineTests` で実ファイルシステムに対して検証済み。
+- [x] マーク複数件のコピー/移動が完了する(Task 1, 4。`GetOperationTargets` がマーク集合を返す)。
+- [x] ディレクトリ再帰のコピー/移動が完了する(Task 1 の `FileOpEngineTests`)。
+- [x] 進捗がステータス行のジョブサマリに表示され、100ms 未満では再計算されない(Task 5)。`RedrawGate`/`UiActivityInProgress` 経由で `JobManager.HasActiveJobs` 中は継続再描画されるよう拡張済み(plan 未記載の実装、下記参照)。
+- [x] 衝突ダイアログが「上書き/すべて上書き/スキップ/すべてスキップ/リネーム」の5択で機能し、sticky が次回以降ダイアログを開かず即答する(Task 3)。
+- [x] 衝突ダイアログの Esc がジョブ全体のキャンセルとして扱われる(Task 3 の `null` 結果 → Task 1 の `CopyOrMoveFileAsync` が `OperationCanceledException` に変換)。
+- [x] 完了時に結果サマリが one-shot でステータス行に表示される(Task 6)。`_redrawGate.Request()` 追加により実際に画面に反映されることを確認済み(初回実装は漏れており、レビューで検出・修正)。
+- [x] 完了時に影響カラム(宛先・ソース親、`OrdinalIgnoreCase`)のみが再読込される(Task 6)。
+- [x] Leap/Search アクティブなペインは自動再読込されず、モード終了時に反映される(Task 6、`ExitSearchMode`/`ExitLeapModeAsync` への追記)。
+- [x] ファイル単位の結果が `OperationLog` に記録される(Task 1 の `ReportItemResult` 呼び出し + Task 4 の `JobFileOpProgress.ReportItemResult`)。
+- [x] アクティブジョブがある状態の `Esc` で終了確認ダイアログが出て、Yes で全ジョブキャンセル+最大5秒待機後に終了する(Task 7)。
+- [x] `FileOpEngine` と `JobManager` のユニットテスト(複数件・失敗継続・キャンセル・同時実行上限4・busy パス前方一致・完了20件保持)がすべて緑(Task 1, 2)。
+- [x] `dotnet build Zurari.csproj` が最終状態で exit 0。
+- [x] `dotnet test Zurari.Tests/Zurari.Tests.csproj` が最終状態で `Passed!`(全テスト、153件)。
 
 ## 未解決事項
 
-(実行セッションが判断保留を記録する欄。空のまま残すこと)
+実行セッション(2026-08-02, subagent-driven-development)が記録する判断保留・発見事項:
+
+1. **`BuildBookmarkAndHistoryList()` は Phase 4 導入済みという前提が誤りだった。** 実際のコードにはブックマーク(`Bookmarks.Load()`)とヒストリ(`_history`)を結合する関数は存在せず、`b`/`h` キーでそれぞれ別々に開くのみだった。Task 4 で新規に追加(ブックマーク優先、ヒストリは新しい順、`OrdinalIgnoreCase` で重複除去)。
+2. **`RedrawGate`/`ShouldDraw`/`UiActivityInProgress` という再描画間引き機構が Phase 7 着手前に既に導入されており、この計画は無視して書かれていた。** `Draw()` は無条件には呼ばれず、`_redrawGate.ShouldDraw(activityInProgress)` が true の tick のみ描画される。ジョブ進捗のスムーズな表示のため `UiActivityInProgress` に `|| JobManager.HasActiveJobs` を追加し、`ShowConfirm`/`ShowListSelect` 等が自前で再描画要求しない点に対応するためダイアログキュー消費後・ジョブ完了検知後に `_redrawGate.Request()` を明示的に呼ぶよう各所に追加した。
+3. **`BuildFrame` のステータス行分岐に計画が知らない `_missingEntryMessage` 分岐が存在した。** ジョブサマリはエラー/`_missingEntryMessage` より低優先度・通常ヒントより高優先度として挿入(計画の優先順位表には無い判断)。
+4. **`Column.CachedChildren`/`CachedTime` は書き込まれるだけで読み取られない死んだフィールドだった。** 計画の `RefreshPaneNowAsync`(`CachedChildren.Clear()` のみ)は無害だが無意味な no-op になっていたはず。実装セッションが `RefreshCurrentAsync` と同じ「`CreateColumnAsync` で再読込 → カーソル位置/マーク引き継ぎ → 差し替え」方式に書き換えた。
+5. **`ExitSearchMode` を `void`→`async Task` に変更した。** 計画通りの fire-and-forget (`_ = RefreshPaneNowAsync(pane)`) だと、ジョブ完了直後に検索モードを抜けたとき、呼び出し元の `HandleSearchKeyAsync` が直後に行う `RebuildRightSideAsync` と競合し `pane.Columns` を破壊しうる実在のバグをレビューで検出。呼び出し元2箇所を `await` に変更して解消。
+6. **クリティカルなバグをレビューで検出・修正: `StartCopyOrMoveAsync` にソース側の `"::DRIVES::"` ガードが無かった。** 削除(`RequestDeleteSelected`)には既存のガードがあったが、コピー/移動には計画にもコードにも無かった。ドライブ一覧でカーソルを合わせて `c`/`m` を押すと、`Path.GetFileName("C:")` が `""` を返すためパス結合が `destDir` そのものに潰れ、ドライブ全体の中身が確認なしで宛先直下にコピー/移動(移動時は原本削除)されるおそれがあった。`RequestDeleteSelected` と同じガードを追加して修正済み(コミット `73bb634`)。
+7. **未修正・許容した軽微な指摘(コードレビューで検出、影響が小さいため計画の verbatim 設計を優先し変更しなかった):**
+   - `TryBuildJobSummary` の 100ms キャッシュはジョブ ID をキーにしていないため、キャッシュ窓内で「最古の実行中ジョブ」が入れ替わると最大 100ms 未満のあいだ古いジョブの情報が表示されうる(次サイクルで自己修復)。
+   - `ExitSearchMode`/`ExitLeapModeAsync` の遅延再読込は `onlyDirs` を渡さずペイン全カラムを再読込する(影響カラムのみではない)。機能的には正しいが非効率。
+   - 終了確認ダイアログ表示中〜`_shouldExit` セットまでの間に再度 Esc を押すと確認ダイアログが二重に開き得る(実害はないが UX として気になる)。
+   - `ShowConfirm` へ渡す `async result => {...}` は async-void 相当(計画で明示的に許容された設計)。`JobManager.CancelAllAndWaitAsync` は現状例外を投げない実装のため今は無害だが、将来その実装が変わった場合は無捕捉例外でプロセスが終了しうる潜在リスクとして記録のみ。
+8. **`JobManagerTests` は同一セッション内の複数回実行で一度だけ一過性の失敗(2件、再実行で成功)を観測した。** `ConcurrencyLimit_...`/`CancelAllAndWaitAsync_...` は元々タイミング依存であることがテスト作成時から認識されており(Task 2 コメント参照)、`DisableTestParallelization` の追加はこの計画のスコープ外として見送った。継続的に不安定であれば別途対応を検討すること。
+9. **実機での対話的な手動確認(実際に `zrr.exe` を起動して `c`/`m` を押す、進捗バーの滑らかさを目視する、衝突ダイアログを実際に操作する等)はこのセッションでは実施していない。** 自動テスト・ビルド・複数ラウンドのコード/spec レビューでロジックは検証したが、TUI を対話的に駆動する手段がセッションに無かったため、各タスクの「手動確認」チェック項目はコードレビューでの代替確認に留まる。ユーザーによる実機確認を推奨する。
