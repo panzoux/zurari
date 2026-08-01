@@ -2623,6 +2623,9 @@ static class Program
     static readonly RedrawGate _redrawGate = new RedrawGate();
     static long _framesBuilt; // diagnostic: printed on exit when ZRR_DEBUG_FRAMES is set
     static readonly object _searchLock = new object();
+    static readonly object _dialogQueueLock = new object();
+    static readonly Queue<Action> _dialogRequestQueue = new();
+    static readonly Dictionary<int, ConflictResolution> _jobStickyChoice = new();
     static MigemoProvider? _migemo;
 
     static readonly Dictionary<string, string> _cursorMemory = new(StringComparer.OrdinalIgnoreCase);
@@ -2663,6 +2666,22 @@ static class Program
             while (true)
             {
                 HandleResizeIfNeeded(FocusedPane);
+
+                if (State.Dialog == null)
+                {
+                    Action? next = null;
+                    lock (_dialogQueueLock)
+                    {
+                        if (_dialogRequestQueue.Count > 0)
+                            next = _dialogRequestQueue.Dequeue();
+                    }
+                    if (next != null)
+                    {
+                        next.Invoke();
+                        _redrawGate.Request(); // ShowXxx() doesn't request a redraw itself — do it here
+                    }
+                }
+
                 if (_redrawGate.ShouldDraw(UiActivityInProgress(FocusedPane)) || State.PrevFrame == null)
                     Draw();
 
@@ -4469,6 +4488,56 @@ static class Program
             Selected = 0,
             OnResult = onResult,
         };
+    }
+
+    static Task<ConflictDecision?> RequestConflictAsync(int jobShortId, string destName)
+    {
+        var tcs = new TaskCompletionSource<ConflictDecision?>();
+
+        lock (_dialogQueueLock)
+        {
+            if (_jobStickyChoice.TryGetValue(jobShortId, out ConflictResolution sticky))
+            {
+                tcs.SetResult(new ConflictDecision(sticky));
+                return tcs.Task;
+            }
+
+            _dialogRequestQueue.Enqueue(() =>
+            {
+                var options = new List<string> { "上書き", "すべて上書き", "スキップ", "すべてスキップ", "リネーム" };
+                ShowListSelect($"#{jobShortId} 衝突: {destName}", options, choice =>
+                {
+                    switch (choice)
+                    {
+                        case null:
+                            tcs.SetResult(null); // Esc = ジョブキャンセル
+                            break;
+                        case "上書き":
+                            tcs.SetResult(new ConflictDecision(ConflictResolution.Overwrite));
+                            break;
+                        case "すべて上書き":
+                            lock (_dialogQueueLock) { _jobStickyChoice[jobShortId] = ConflictResolution.Overwrite; }
+                            tcs.SetResult(new ConflictDecision(ConflictResolution.Overwrite));
+                            break;
+                        case "スキップ":
+                            tcs.SetResult(new ConflictDecision(ConflictResolution.Skip));
+                            break;
+                        case "すべてスキップ":
+                            lock (_dialogQueueLock) { _jobStickyChoice[jobShortId] = ConflictResolution.Skip; }
+                            tcs.SetResult(new ConflictDecision(ConflictResolution.Skip));
+                            break;
+                        case "リネーム":
+                            ShowTextInput("新しい名前", destName, newName =>
+                            {
+                                tcs.SetResult(newName == null ? null : new ConflictDecision(ConflictResolution.Rename, newName));
+                            });
+                            break;
+                    }
+                });
+            });
+        }
+
+        return tcs.Task;
     }
 
     // 開いているダイアログを閉じ、結果コールバックを呼ぶ共通クローズ処理。
