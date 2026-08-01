@@ -647,11 +647,16 @@ static class FileOpEngine
 
         try
         {
-            long bytes = isMove
+            long? bytes = isMove
                 ? await MoveWithConflictRetryAsync(src, finalDest, overwrite, onConflict, ct)
                 : await CopyWithConflictRetryAsync(src, finalDest, overwrite, onConflict, ct);
+            if (bytes == null)
+            {
+                progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, isMove ? "MOVE" : "COPY", "SKIP", src, finalDest, ""));
+                return (ItemOutcome.Skipped, 0, null);
+            }
             progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, isMove ? "MOVE" : "COPY", "OK", src, finalDest, ""));
-            return (ItemOutcome.Succeeded, bytes, null);
+            return (ItemOutcome.Succeeded, bytes.Value, null);
         }
         catch (OperationCanceledException)
         {
@@ -667,7 +672,8 @@ static class FileOpEngine
         }
     }
 
-    static async Task<long> MoveWithConflictRetryAsync(
+    // Returns null when the nested conflict retry resolves to Skip (caller must report Skipped, not Succeeded).
+    static async Task<long?> MoveWithConflictRetryAsync(
         string src, string dest, bool overwrite, Func<string, Task<ConflictDecision?>> onConflict, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -680,7 +686,7 @@ static class FileOpEngine
         {
             var decision = await onConflict(Path.GetFileName(dest));
             if (decision == null) throw new OperationCanceledException(ct);
-            if (decision.Resolution == ConflictResolution.Skip) return 0;
+            if (decision.Resolution == ConflictResolution.Skip) return null;
 
             string finalDest = decision.Resolution == ConflictResolution.Rename
                 ? Path.Combine(Path.GetDirectoryName(dest) ?? "", decision.NewName ?? Path.GetFileName(dest))
@@ -690,7 +696,8 @@ static class FileOpEngine
         }
     }
 
-    static async Task<long> CopyWithConflictRetryAsync(
+    // Returns null when the nested conflict retry resolves to Skip (caller must report Skipped, not Succeeded).
+    static async Task<long?> CopyWithConflictRetryAsync(
         string src, string dest, bool overwrite, Func<string, Task<ConflictDecision?>> onConflict, CancellationToken ct)
     {
         FileMode mode = overwrite ? FileMode.Create : FileMode.CreateNew;
@@ -702,7 +709,7 @@ static class FileOpEngine
         {
             var decision = await onConflict(Path.GetFileName(dest));
             if (decision == null) throw new OperationCanceledException(ct);
-            if (decision.Resolution == ConflictResolution.Skip) return 0;
+            if (decision.Resolution == ConflictResolution.Skip) return null;
 
             string finalDest = decision.Resolution == ConflictResolution.Rename
                 ? Path.Combine(Path.GetDirectoryName(dest) ?? "", decision.NewName ?? Path.GetFileName(dest))

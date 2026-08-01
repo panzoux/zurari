@@ -240,6 +240,85 @@ public class FileOpEngineTests
     }
 
     [Fact]
+    public async Task CopyAsync_NestedConflictRetry_SkipOnSecondAttempt_ReportsSkippedNotSucceeded()
+    {
+        // Forces the nested-retry path deterministically (no timing race needed): the first
+        // onConflict call resolves to Rename targeting a name that itself already exists on
+        // disk, which makes the first CreateNew attempt throw IOException and triggers a
+        // second (nested) onConflict call. That second call resolves to Skip, which must be
+        // reported as Skipped, not Succeeded (regression test for the "OK"/Succeeded mislabel).
+        string root = NewTempDir();
+        try
+        {
+            string srcDir = Path.Combine(root, "src");
+            string destDir = Path.Combine(root, "dest");
+            Directory.CreateDirectory(srcDir);
+            Directory.CreateDirectory(destDir);
+            File.WriteAllText(Path.Combine(srcDir, "a.txt"), "new");
+            File.WriteAllText(Path.Combine(destDir, "a.txt"), "old");
+            File.WriteAllText(Path.Combine(destDir, "a (2).txt"), "colliding");
+
+            int callCount = 0;
+            Func<string, Task<ConflictDecision?>> onConflict = _ =>
+            {
+                callCount++;
+                return callCount == 1
+                    ? Task.FromResult<ConflictDecision?>(new ConflictDecision(ConflictResolution.Rename, "a (2).txt"))
+                    : Task.FromResult<ConflictDecision?>(new ConflictDecision(ConflictResolution.Skip));
+            };
+
+            var result = await FileOpEngine.CopyAsync(
+                new[] { Path.Combine(srcDir, "a.txt") }, destDir, new NullProgress(), onConflict, CancellationToken.None);
+
+            Assert.Equal(2, callCount);
+            Assert.Equal(0, result.Succeeded);
+            Assert.Equal(1, result.Skipped);
+            Assert.Equal(0, result.Failed);
+            Assert.Equal("old", File.ReadAllText(Path.Combine(destDir, "a.txt")));
+            Assert.Equal("colliding", File.ReadAllText(Path.Combine(destDir, "a (2).txt")));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task MoveAsync_NestedConflictRetry_SkipOnSecondAttempt_ReportsSkippedNotSucceeded()
+    {
+        string root = NewTempDir();
+        try
+        {
+            string srcDir = Path.Combine(root, "src");
+            string destDir = Path.Combine(root, "dest");
+            Directory.CreateDirectory(srcDir);
+            Directory.CreateDirectory(destDir);
+            string srcFile = Path.Combine(srcDir, "a.txt");
+            File.WriteAllText(srcFile, "new");
+            File.WriteAllText(Path.Combine(destDir, "a.txt"), "old");
+            File.WriteAllText(Path.Combine(destDir, "a (2).txt"), "colliding");
+
+            int callCount = 0;
+            Func<string, Task<ConflictDecision?>> onConflict = _ =>
+            {
+                callCount++;
+                return callCount == 1
+                    ? Task.FromResult<ConflictDecision?>(new ConflictDecision(ConflictResolution.Rename, "a (2).txt"))
+                    : Task.FromResult<ConflictDecision?>(new ConflictDecision(ConflictResolution.Skip));
+            };
+
+            var result = await FileOpEngine.MoveAsync(
+                new[] { srcFile }, destDir, new NullProgress(), onConflict, CancellationToken.None);
+
+            Assert.Equal(2, callCount);
+            Assert.Equal(0, result.Succeeded);
+            Assert.Equal(1, result.Skipped);
+            Assert.Equal(0, result.Failed);
+            Assert.True(File.Exists(srcFile)); // skipped: source must remain
+            Assert.Equal("old", File.ReadAllText(Path.Combine(destDir, "a.txt")));
+            Assert.Equal("colliding", File.ReadAllText(Path.Combine(destDir, "a (2).txt")));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task MoveAsync_Directory_RemovesSourceDirAfterMove()
     {
         string root = NewTempDir();
