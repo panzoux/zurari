@@ -799,6 +799,154 @@ static class FileOpEngine
     }
 }
 
+enum JobStatus { Pending, Running, Completed, Failed, Cancelled }
+
+sealed class BackgroundJob
+{
+    public int ShortId;
+    public string OpName = ""; // "コピー" / "移動"
+    public JobStatus Status;
+    public int DoneCount;
+    public int TotalCount;
+    public long BytesTransferred;
+    public string CurrentFile = "";
+    public CancellationTokenSource Cts = new();
+    public List<string> SourcePaths = new();
+    public string DestDir = "";
+    public FileOpResult? Result;
+    public DateTime StartTime;
+    public DateTime? EndTime;
+}
+
+static class JobManager
+{
+    const int MaxConcurrentJobs = 4;
+    const int MaxCompletedHistory = 20;
+
+    public static readonly object ProgressLock = new object();
+
+    static readonly object _lock = new object();
+    static readonly List<BackgroundJob> _jobs = new();
+    static readonly SemaphoreSlim _semaphore = new(MaxConcurrentJobs);
+    static int _nextShortId = 1;
+
+    public static BackgroundJob Start(string opName, IReadOnlyList<string> sources, string destDir,
+        Func<BackgroundJob, CancellationToken, Task<FileOpResult>> work)
+    {
+        var job = new BackgroundJob
+        {
+            OpName = opName,
+            Status = JobStatus.Pending,
+            SourcePaths = new List<string>(sources),
+            DestDir = destDir,
+            StartTime = DateTime.Now,
+        };
+
+        lock (_lock)
+        {
+            job.ShortId = _nextShortId++;
+            _jobs.Add(job);
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _semaphore.WaitAsync(job.Cts.Token);
+                try
+                {
+                    lock (_lock) { job.Status = JobStatus.Running; }
+                    FileOpResult result = await work(job, job.Cts.Token);
+                    lock (_lock)
+                    {
+                        job.Result = result;
+                        job.Status = JobStatus.Completed;
+                        job.EndTime = DateTime.Now;
+                    }
+                }
+                finally
+                {
+                    _semaphore.Release();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                lock (_lock) { job.Status = JobStatus.Cancelled; job.EndTime = DateTime.Now; }
+            }
+            catch (Exception)
+            {
+                lock (_lock) { job.Status = JobStatus.Failed; job.EndTime = DateTime.Now; }
+            }
+            finally
+            {
+                TrimCompletedHistory();
+            }
+        });
+
+        return job;
+    }
+
+    public static List<BackgroundJob> Snapshot()
+    {
+        lock (_lock) { return new List<BackgroundJob>(_jobs); }
+    }
+
+    public static void Cancel(int shortId)
+    {
+        lock (_lock) { _jobs.Find(j => j.ShortId == shortId)?.Cts.Cancel(); }
+    }
+
+    public static List<string> GetBusyPaths()
+    {
+        lock (_lock)
+        {
+            var paths = new List<string>();
+            foreach (var job in _jobs)
+            {
+                if (job.Status != JobStatus.Pending && job.Status != JobStatus.Running) continue;
+                paths.AddRange(job.SourcePaths);
+                paths.Add(job.DestDir);
+            }
+            return paths;
+        }
+    }
+
+    public static bool HasActiveJobs
+    {
+        get { lock (_lock) { return _jobs.Exists(j => j.Status == JobStatus.Pending || j.Status == JobStatus.Running); } }
+    }
+
+    public static async Task CancelAllAndWaitAsync(TimeSpan timeout)
+    {
+        List<BackgroundJob> active;
+        lock (_lock) { active = _jobs.FindAll(j => j.Status == JobStatus.Pending || j.Status == JobStatus.Running); }
+        foreach (var job in active) job.Cts.Cancel();
+
+        DateTime deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            bool anyActive;
+            lock (_lock) { anyActive = _jobs.Exists(j => j.Status == JobStatus.Pending || j.Status == JobStatus.Running); }
+            if (!anyActive) return;
+            await Task.Delay(50);
+        }
+    }
+
+    static void TrimCompletedHistory()
+    {
+        lock (_lock)
+        {
+            var completed = _jobs.FindAll(j => j.Status == JobStatus.Completed || j.Status == JobStatus.Failed || j.Status == JobStatus.Cancelled);
+            if (completed.Count <= MaxCompletedHistory) return;
+
+            completed.Sort((a, b) => (a.EndTime ?? DateTime.MinValue).CompareTo(b.EndTime ?? DateTime.MinValue));
+            int toRemove = completed.Count - MaxCompletedHistory;
+            for (int i = 0; i < toRemove; i++)
+                _jobs.Remove(completed[i]);
+        }
+    }
+}
+
 sealed class Column
 {
     public string Path;
