@@ -3146,6 +3146,12 @@ static class Program
 
     static async Task StartCopyOrMoveAsync(Pane pane, bool isMove)
     {
+        if (pane.Columns[pane.ActiveColumn].Path == "::DRIVES::")
+        {
+            _lastErrorMessage = isMove ? "ドライブ一覧は移動元にできません" : "ドライブ一覧はコピー元にできません";
+            return;
+        }
+
         List<string> targets = GetOperationTargets(pane);
         if (targets.Count == 0)
         {
