@@ -2617,6 +2617,8 @@ static class Program
     static Pane FocusedPane => State.Panes[State.FocusedPane];
     static DateTime _lastNavigationTime = DateTime.MinValue;
     static string? _lastErrorMessage = null;
+    static DateTime _lastJobSummaryRenderTime = DateTime.MinValue;
+    static string? _cachedJobSummary = null;
     static string? _missingEntryMessage = null;
     static Column? _missingEntryColumn = null;
     static int _missingEntrySelected = -1;
@@ -5284,7 +5286,8 @@ static class Program
     {
         return AnyColumnLoading(pane)
             || pane.Preview.IsLoading
-            || (pane.Search.Active && !pane.Search.SearchDone);
+            || (pane.Search.Active && !pane.Search.SearchDone)
+            || JobManager.HasActiveJobs;
     }
 
     static void Draw()
@@ -5420,6 +5423,10 @@ static class Program
             string status = CharacterWidth.SmartTruncate(_missingEntryMessage, width);
             frame[height - 1] = CharacterWidth.PadToWidth(status, width);
         }
+        else if (TryBuildJobSummary(width, out string jobSummary))
+        {
+            frame[height - 1] = jobSummary;
+        }
         else
         {
             string previewHint = pane.Preview.IsVisible ? "Shift+V=Preview[on]" : "Shift+V=Preview[off]";
@@ -5441,6 +5448,41 @@ static class Program
         DrawDialogOverlay(frame, width, height);
 
         return frame;
+    }
+
+    static bool TryBuildJobSummary(int width, out string summary)
+    {
+        List<BackgroundJob> active = JobManager.Snapshot().FindAll(j => j.Status == JobStatus.Pending || j.Status == JobStatus.Running);
+
+        if (active.Count == 0)
+        {
+            summary = "";
+            return false;
+        }
+
+        if (_cachedJobSummary == null || (DateTime.UtcNow - _lastJobSummaryRenderTime).TotalMilliseconds >= 100)
+        {
+            active.Sort((a, b) => a.StartTime.CompareTo(b.StartTime));
+            BackgroundJob oldest = active[0];
+
+            int doneCount, totalCount;
+            string currentFile;
+            lock (JobManager.ProgressLock)
+            {
+                doneCount = oldest.DoneCount;
+                totalCount = oldest.TotalCount;
+                currentFile = oldest.CurrentFile;
+            }
+
+            int percent = totalCount > 0 ? (int)(100.0 * doneCount / totalCount) : 0;
+            string text = $"▶{active.Count}件実行中 #{oldest.ShortId} {oldest.OpName} {percent}% ({doneCount}/{totalCount}) {currentFile}";
+            text = CharacterWidth.SmartTruncate(text, width);
+            _cachedJobSummary = CharacterWidth.PadToWidth(text, width);
+            _lastJobSummaryRenderTime = DateTime.UtcNow;
+        }
+
+        summary = _cachedJobSummary!;
+        return true;
     }
 
     static void DrawDialogOverlay(string[] frame, int width, int height)
