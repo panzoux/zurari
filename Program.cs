@@ -2619,6 +2619,8 @@ static class Program
     static string? _lastErrorMessage = null;
     static DateTime _lastJobSummaryRenderTime = DateTime.MinValue;
     static string? _cachedJobSummary = null;
+    static readonly Dictionary<int, JobStatus> _lastKnownJobStatus = new();
+    static DateTime _lastActiveJobRefreshTime = DateTime.MinValue;
     static string? _missingEntryMessage = null;
     static Column? _missingEntryColumn = null;
     static int _missingEntrySelected = -1;
@@ -2683,6 +2685,9 @@ static class Program
                         _redrawGate.Request(); // ShowXxx() doesn't request a redraw itself — do it here
                     }
                 }
+
+                await ProcessJobCompletionsAsync();
+                await RefreshActiveJobColumnsAsync();
 
                 if (_redrawGate.ShouldDraw(UiActivityInProgress(FocusedPane)) || State.PrevFrame == null)
                     Draw();
@@ -3199,6 +3204,121 @@ static class Program
         {
             OperationLog.Append(entry with { JobId = _job.ShortId });
         }
+    }
+
+    static async Task ProcessJobCompletionsAsync()
+    {
+        List<BackgroundJob> snapshot = JobManager.Snapshot();
+        var newlyFinished = new List<BackgroundJob>();
+
+        foreach (var job in snapshot)
+        {
+            bool isFinished = job.Status == JobStatus.Completed || job.Status == JobStatus.Failed || job.Status == JobStatus.Cancelled;
+            bool wasKnown = _lastKnownJobStatus.TryGetValue(job.ShortId, out JobStatus prevStatus);
+
+            if (isFinished && (!wasKnown || prevStatus != job.Status))
+                newlyFinished.Add(job);
+
+            _lastKnownJobStatus[job.ShortId] = job.Status;
+        }
+
+        foreach (var job in newlyFinished)
+        {
+            _lastErrorMessage = BuildJobResultSummary(job);
+            await RefreshAffectedColumnsAsync(job);
+
+            // The job is done, so its sticky conflict-resolution choice (if any) no longer applies to
+            // anything — drop it so _jobStickyChoice doesn't accumulate an unbounded stale entry per job.
+            lock (_dialogQueueLock) { _jobStickyChoice.Remove(job.ShortId); }
+        }
+    }
+
+    static string BuildJobResultSummary(BackgroundJob job)
+    {
+        if (job.Status == JobStatus.Cancelled)
+        {
+            int done = job.Result?.Succeeded ?? job.DoneCount;
+            return $"キャンセル: {done}/{job.TotalCount}件完了";
+        }
+
+        FileOpResult? result = job.Result;
+        if (result == null)
+            return $"{job.OpName} #{job.ShortId}: 完了";
+
+        if (result.Failed > 0)
+            return $"{job.OpName} #{job.ShortId}: {result.Succeeded}件完了 / {result.Failed}件失敗: {result.FirstError}";
+        if (result.Skipped > 0)
+            return $"{job.OpName} #{job.ShortId}: {result.Succeeded}件完了 / {result.Skipped}件スキップ";
+        return $"{job.OpName}完了: {result.Succeeded}件";
+    }
+
+    static async Task RefreshAffectedColumnsAsync(BackgroundJob job)
+    {
+        var affectedDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { job.DestDir };
+        foreach (string src in job.SourcePaths)
+        {
+            string? parent = Path.GetDirectoryName(src.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            if (parent != null)
+                affectedDirs.Add(parent);
+        }
+
+        foreach (Pane pane in State.Panes)
+        {
+            if (!pane.Columns.Exists(c => affectedDirs.Contains(c.Path)))
+                continue;
+
+            if (pane.Leap.Active || pane.Search.Active)
+            {
+                pane.NeedsRefresh = true;
+                continue;
+            }
+
+            await RefreshPaneNowAsync(pane, affectedDirs);
+        }
+    }
+
+    // NOTE: Column.CachedChildren/CachedTime are not actually consulted anywhere as a cache-hit
+    // check (verified via full-file search — CreateColumn/CreateColumnAsync always re-list from
+    // disk unconditionally; the only other writer, RefreshCurrent(), clears them purely as
+    // bookkeeping before discarding the Column). So "invalidating" them here would refresh nothing.
+    // The real mechanism (mirroring RefreshCurrentAsync) is: save cursor memory for the path, build
+    // a brand-new Column via CreateColumnAsync (which re-lists from disk and restores the cursor via
+    // ApplyCursorMemory/SeekRestoreTo), carry over Marked state, then swap it into the pane.
+    static async Task RefreshPaneNowAsync(Pane pane, HashSet<string>? onlyDirs = null)
+    {
+        int deepestAffected = -1;
+        for (int i = 0; i < pane.Columns.Count; i++)
+        {
+            Column current = pane.Columns[i];
+            if (onlyDirs != null && !onlyDirs.Contains(current.Path))
+                continue;
+
+            SaveCursorMemory(current);
+            Column refreshed = await CreateColumnAsync(current.Path, CancellationToken.None);
+            if (refreshed.LoadingTask != null)
+                await refreshed.LoadingTask;
+
+            refreshed.Marked = current.Marked;
+            MarkHelper.ReconcileAfterReload(refreshed);
+
+            pane.Columns[i] = refreshed;
+            deepestAffected = i;
+        }
+        if (deepestAffected < 0) deepestAffected = 0;
+        await RebuildRightSideAsync(pane, deepestAffected);
+    }
+
+    static async Task RefreshActiveJobColumnsAsync()
+    {
+        List<BackgroundJob> active = JobManager.Snapshot().FindAll(j => j.Status == JobStatus.Running);
+        if (active.Count == 0) return;
+
+        if ((DateTime.UtcNow - _lastActiveJobRefreshTime).TotalMilliseconds < 500)
+            return;
+        _lastActiveJobRefreshTime = DateTime.UtcNow;
+
+        foreach (BackgroundJob job in active)
+            await RefreshAffectedColumnsAsync(job);
     }
 
     static Column CreateColumn(string path)
@@ -4175,6 +4295,11 @@ static class Program
             pane.Search.Matches.Clear();
             pane.Search.SearchDone = true;
         }
+        if (pane.NeedsRefresh)
+        {
+            pane.NeedsRefresh = false;
+            _ = RefreshPaneNowAsync(pane);
+        }
     }
 
     static void EnterLeapMode(Pane pane)
@@ -4213,6 +4338,11 @@ static class Program
         UpdateHorizontalScroll(pane);
         await RebuildRightSideAsync(pane, pane.ActiveColumn);
         if (pane.Preview.IsVisible) StartPreviewLoad(pane);
+        if (pane.NeedsRefresh)
+        {
+            pane.NeedsRefresh = false;
+            await RefreshPaneNowAsync(pane);
+        }
     }
 
     static async Task HandleLeapKeyAsync(Pane pane, ConsoleKeyInfo key)
