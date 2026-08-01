@@ -3230,16 +3230,15 @@ static class Program
             // The job is done, so its sticky conflict-resolution choice (if any) no longer applies to
             // anything — drop it so _jobStickyChoice doesn't accumulate an unbounded stale entry per job.
             lock (_dialogQueueLock) { _jobStickyChoice.Remove(job.ShortId); }
+
+            _redrawGate.Request();
         }
     }
 
     static string BuildJobResultSummary(BackgroundJob job)
     {
         if (job.Status == JobStatus.Cancelled)
-        {
-            int done = job.Result?.Succeeded ?? job.DoneCount;
-            return $"キャンセル: {done}/{job.TotalCount}件完了";
-        }
+            return $"キャンセル: {job.DoneCount}/{job.TotalCount}件処理済み";
 
         FileOpResult? result = job.Result;
         if (result == null)
@@ -4282,7 +4281,7 @@ static class Program
         }
     }
 
-    static void ExitSearchMode(Pane pane, bool restoreCursor)
+    static async Task ExitSearchMode(Pane pane, bool restoreCursor)
     {
         pane.Search.SearchCts?.Cancel();
         pane.Search.SearchCts?.Dispose();
@@ -4298,7 +4297,7 @@ static class Program
         if (pane.NeedsRefresh)
         {
             pane.NeedsRefresh = false;
-            _ = RefreshPaneNowAsync(pane);
+            await RefreshPaneNowAsync(pane);
         }
     }
 
@@ -4959,7 +4958,7 @@ static class Program
 
         if (key.Key == ConsoleKey.Escape)
         {
-            ExitSearchMode(pane, restoreCursor: true);
+            await ExitSearchMode(pane, restoreCursor: true);
             UpdateHorizontalScroll(pane);
             await RebuildRightSideAsync(pane, pane.ActiveColumn);
             if (pane.Preview.IsVisible) StartPreviewLoad(pane);
@@ -4968,7 +4967,7 @@ static class Program
 
         if (key.Key == ConsoleKey.Enter)
         {
-            ExitSearchMode(pane, restoreCursor: false);
+            await ExitSearchMode(pane, restoreCursor: false);
             UpdateHorizontalScroll(pane);
             await RebuildRightSideAsync(pane, pane.ActiveColumn);
             if (pane.Preview.IsVisible) StartPreviewLoad(pane);
