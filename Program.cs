@@ -5544,7 +5544,7 @@ static class Program
         if (!State.SplitActive)
         {
             // Full path line (above status) — single pane, no own path line was drawn above.
-            string fullPath = GetCurrentFullPath(pane);
+            string fullPath = "\"" + GetCurrentFullPath(pane) + "\"";
             fullPath = CharacterWidth.SmartTruncate(fullPath, width);
             frame[height - 2] = CharacterWidth.PadToWidth(fullPath, width);
         }
@@ -5699,7 +5699,7 @@ static class Program
         if (showOwnPathLine)
         {
             string prefix = focused ? "> " : "  ";
-            string fullPath = prefix + GetCurrentFullPath(pane);
+            string fullPath = prefix + "\"" + GetCurrentFullPath(pane) + "\"";
             fullPath = CharacterWidth.SmartTruncate(fullPath, width);
             string padded = CharacterWidth.PadToWidth(fullPath, width);
             lines[yOffset + height - 1].AddColumn(padded, width, width);
@@ -5717,14 +5717,16 @@ static class Program
         string dirColor      = focused ? "\x1b[94m" : AnsiColors.Gray;   // ディレクトリ色: 明青→グレー
         string selBgActive   = focused ? "\x1b[47m" : "\x1b[100m";       // 選択行背景(このカラムがアクティブ時): 白→暗グレー
         string selBgInactive = "\x1b[100m";                              // 選択行背景(このカラムが非アクティブ時): 常に暗グレー(変更なし)
-        string selDirText    = focused ? "\x1b[94m" : AnsiColors.Gray;   // 選択行内ディレクトリ文字色
-        string selFileText   = focused ? "\x1b[30m" : AnsiColors.Gray;   // 選択行内ファイル文字色
+        // 選択行(カーソル行)の文字色は非フォーカス時も背景の暗グレーに対して視認できる色を使う
+        // (以前は AnsiColors.Gray を使っていたため、背景も文字もグレーで見えなくなっていた)。
+        string selDirText    = focused ? "\x1b[94m" : "\x1b[34m";        // 選択行内ディレクトリ文字色: 明青→濃紺
+        string selFileText   = "\x1b[30m";                               // 選択行内ファイル文字色: 常に黒
         string matchBg       = focused ? "\x1b[42m" : "\x1b[100m";       // Search 現在マッチ背景: 緑→暗グレー
         string matchText     = focused ? "\x1b[30m" : AnsiColors.Gray;   // Search 現在マッチ文字色
         string otherMatchFg  = focused ? "\x1b[32m" : AnsiColors.Gray;   // Search 他マッチ前景: 緑→グレー
         string leapSelBg     = focused ? "\x1b[47m" : "\x1b[100m";       // Leap 選択行背景
-        string leapDirText   = focused ? "\x1b[94m" : AnsiColors.Gray;   // Leap 選択行ディレクトリ文字色
-        string leapFileText  = focused ? "\x1b[30m" : AnsiColors.Gray;   // Leap 選択行ファイル文字色
+        string leapDirText   = focused ? "\x1b[94m" : "\x1b[34m";        // Leap 選択行ディレクトリ文字色: 明青→濃紺
+        string leapFileText  = "\x1b[30m";                               // Leap 選択行ファイル文字色: 常に黒
         string markBg        = focused ? "\x1b[46m" : "\x1b[100m";      // マーク済み行背景(非選択時): シアン→暗グレー
         string markText      = focused ? "\x1b[30m" : AnsiColors.Gray;  // マーク済み行文字色(非選択時): 黒→グレー
 
