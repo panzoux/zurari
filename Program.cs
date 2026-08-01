@@ -33,6 +33,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.ComponentModel;
 using System.Security.Cryptography;
+using System.Linq;
 
 internal enum FileCategory { Text, Image, Video, Audio, Archive, Executable, Pdf, Drive, Binary }
 
@@ -509,6 +510,285 @@ static class CharacterWidth
 
         int spacesNeeded = targetWidth - textWidth;
         return text + new string(padChar, spacesNeeded);
+    }
+}
+
+enum ConflictResolution { Overwrite, Skip, Rename }
+
+sealed record ConflictDecision(ConflictResolution Resolution, string? NewName = null);
+
+sealed record FileOpResult(int Succeeded, int Skipped, int Failed, string? FirstError);
+
+sealed record FileOpProgressInfo(int DoneCount, int TotalCount, long BytesTransferred, string CurrentFile);
+
+interface IFileOpProgress
+{
+    void Report(FileOpProgressInfo info);
+    void ReportItemResult(OpLogEntry entry);
+}
+
+static class FileOpEngine
+{
+    const int CopyBufferSize = 1024 * 1024; // 1MB
+    const FileOptions CopyFileOptions = FileOptions.Asynchronous | FileOptions.SequentialScan;
+
+    enum ItemOutcome { Succeeded, Skipped, Failed, Cancelled }
+
+    public static Task<FileOpResult> CopyAsync(
+        IReadOnlyList<string> sources, string destDir, IFileOpProgress progress,
+        Func<string, Task<ConflictDecision?>> onConflict, CancellationToken ct)
+        => RunBatchAsync(sources, destDir, progress, onConflict, ct, isMove: false);
+
+    public static Task<FileOpResult> MoveAsync(
+        IReadOnlyList<string> sources, string destDir, IFileOpProgress progress,
+        Func<string, Task<ConflictDecision?>> onConflict, CancellationToken ct)
+        => RunBatchAsync(sources, destDir, progress, onConflict, ct, isMove: true);
+
+    static async Task<FileOpResult> RunBatchAsync(
+        IReadOnlyList<string> sources, string destDir, IFileOpProgress progress,
+        Func<string, Task<ConflictDecision?>> onConflict, CancellationToken ct, bool isMove)
+    {
+        int succeeded = 0, skipped = 0, failed = 0;
+        string? firstError = null;
+        long bytesTransferred = 0;
+        int doneCount = 0;
+
+        int totalCount = 0;
+        foreach (string src in sources)
+            totalCount += CountUnits(src);
+
+        foreach (string src in sources)
+        {
+            ct.ThrowIfCancellationRequested();
+            string name = Path.GetFileName(src.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            string dest = Path.Combine(destDir, name);
+
+            bool isDir;
+            try { isDir = Directory.Exists(src); }
+            catch (Exception ex)
+            {
+                failed++;
+                firstError ??= ex.Message;
+                progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, isMove ? "MOVE" : "COPY", "FAIL", src, dest, ex.Message));
+                continue;
+            }
+
+            if (isDir)
+            {
+                var sub = await CopyOrMoveDirectoryAsync(src, dest, progress, onConflict, ct, isMove);
+                succeeded += sub.Succeeded; skipped += sub.Skipped; failed += sub.Failed;
+                firstError ??= sub.FirstError;
+                bytesTransferred += sub.Bytes;
+                doneCount += sub.Succeeded + sub.Skipped + sub.Failed;
+                progress.Report(new FileOpProgressInfo(doneCount, totalCount, bytesTransferred, src));
+            }
+            else
+            {
+                var (outcome, bytes, error) = await CopyOrMoveFileAsync(src, dest, progress, onConflict, ct, isMove);
+                bytesTransferred += bytes;
+                doneCount++;
+                progress.Report(new FileOpProgressInfo(doneCount, totalCount, bytesTransferred, src));
+                switch (outcome)
+                {
+                    case ItemOutcome.Succeeded: succeeded++; break;
+                    case ItemOutcome.Skipped: skipped++; break;
+                    case ItemOutcome.Failed: failed++; firstError ??= error; break;
+                    case ItemOutcome.Cancelled: throw new OperationCanceledException(ct);
+                }
+            }
+        }
+
+        return new FileOpResult(succeeded, skipped, failed, firstError);
+    }
+
+    static int CountUnits(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                int count = 0;
+                foreach (string _ in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+                    count++;
+                return Math.Max(count, 1);
+            }
+        }
+        catch { }
+        return 1;
+    }
+
+    // Conflict check happens immediately before the copy/move attempt (not a pre-scan). A TOCTOU
+    // race (external process creates the same-name file between the check and the actual write)
+    // surfaces as an IOException from overwrite:false, which is folded into the same onConflict
+    // callback below rather than handled by a dedicated exclusion mechanism.
+    static async Task<(ItemOutcome, long, string? Error)> CopyOrMoveFileAsync(
+        string src, string dest, IFileOpProgress progress,
+        Func<string, Task<ConflictDecision?>> onConflict, CancellationToken ct, bool isMove)
+    {
+        string finalDest = dest;
+        bool overwrite = false;
+
+        if (File.Exists(finalDest) || Directory.Exists(finalDest))
+        {
+            var decision = await onConflict(Path.GetFileName(finalDest));
+            if (decision == null)
+                return (ItemOutcome.Cancelled, 0, null);
+
+            if (decision.Resolution == ConflictResolution.Skip)
+            {
+                progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, isMove ? "MOVE" : "COPY", "SKIP", src, finalDest, ""));
+                return (ItemOutcome.Skipped, 0, null);
+            }
+            if (decision.Resolution == ConflictResolution.Rename)
+                finalDest = Path.Combine(Path.GetDirectoryName(finalDest) ?? "", decision.NewName ?? Path.GetFileName(finalDest));
+            else
+                overwrite = true;
+        }
+
+        try
+        {
+            long bytes = isMove
+                ? await MoveWithConflictRetryAsync(src, finalDest, overwrite, onConflict, ct)
+                : await CopyWithConflictRetryAsync(src, finalDest, overwrite, onConflict, ct);
+            progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, isMove ? "MOVE" : "COPY", "OK", src, finalDest, ""));
+            return (ItemOutcome.Succeeded, bytes, null);
+        }
+        catch (OperationCanceledException)
+        {
+            TryDeletePartialFile(finalDest);
+            progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, isMove ? "MOVE" : "COPY", "CANCEL", src, finalDest, ""));
+            return (ItemOutcome.Cancelled, 0, null);
+        }
+        catch (Exception ex)
+        {
+            TryDeletePartialFile(finalDest);
+            progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, isMove ? "MOVE" : "COPY", "FAIL", src, finalDest, ex.Message));
+            return (ItemOutcome.Failed, 0, ex.Message);
+        }
+    }
+
+    static async Task<long> MoveWithConflictRetryAsync(
+        string src, string dest, bool overwrite, Func<string, Task<ConflictDecision?>> onConflict, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        try
+        {
+            File.Move(src, dest, overwrite);
+            return new FileInfo(dest) is { Exists: true } fi ? fi.Length : 0;
+        }
+        catch (IOException) when (!overwrite)
+        {
+            var decision = await onConflict(Path.GetFileName(dest));
+            if (decision == null) throw new OperationCanceledException(ct);
+            if (decision.Resolution == ConflictResolution.Skip) return 0;
+
+            string finalDest = decision.Resolution == ConflictResolution.Rename
+                ? Path.Combine(Path.GetDirectoryName(dest) ?? "", decision.NewName ?? Path.GetFileName(dest))
+                : dest;
+            File.Move(src, finalDest, decision.Resolution == ConflictResolution.Overwrite);
+            return new FileInfo(finalDest) is { Exists: true } fi2 ? fi2.Length : 0;
+        }
+    }
+
+    static async Task<long> CopyWithConflictRetryAsync(
+        string src, string dest, bool overwrite, Func<string, Task<ConflictDecision?>> onConflict, CancellationToken ct)
+    {
+        FileMode mode = overwrite ? FileMode.Create : FileMode.CreateNew;
+        try
+        {
+            return await StreamCopyAsync(src, dest, mode, ct);
+        }
+        catch (IOException) when (!overwrite)
+        {
+            var decision = await onConflict(Path.GetFileName(dest));
+            if (decision == null) throw new OperationCanceledException(ct);
+            if (decision.Resolution == ConflictResolution.Skip) return 0;
+
+            string finalDest = decision.Resolution == ConflictResolution.Rename
+                ? Path.Combine(Path.GetDirectoryName(dest) ?? "", decision.NewName ?? Path.GetFileName(dest))
+                : dest;
+            FileMode retryMode = decision.Resolution == ConflictResolution.Overwrite ? FileMode.Create : FileMode.CreateNew;
+            return await StreamCopyAsync(src, finalDest, retryMode, ct);
+        }
+    }
+
+    static async Task<long> StreamCopyAsync(string src, string dest, FileMode mode, CancellationToken ct)
+    {
+        long total = 0;
+        using var sourceStream = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.Read, CopyBufferSize, CopyFileOptions);
+        using var destStream = new FileStream(dest, mode, FileAccess.Write, FileShare.None, CopyBufferSize, CopyFileOptions);
+        byte[] buffer = new byte[CopyBufferSize];
+        int bytesRead;
+        while ((bytesRead = await sourceStream.ReadAsync(buffer, 0, buffer.Length, ct)) > 0)
+        {
+            await destStream.WriteAsync(buffer, 0, bytesRead, ct);
+            total += bytesRead;
+        }
+        return total;
+    }
+
+    static void TryDeletePartialFile(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); }
+        catch { }
+    }
+
+    static async Task<(int Succeeded, int Skipped, int Failed, string? FirstError, long Bytes)> CopyOrMoveDirectoryAsync(
+        string srcDir, string destDir, IFileOpProgress progress,
+        Func<string, Task<ConflictDecision?>> onConflict, CancellationToken ct, bool isMove)
+    {
+        int succeeded = 0, skipped = 0, failed = 0;
+        string? firstError = null;
+        long bytes = 0;
+
+        try { Directory.CreateDirectory(destDir); }
+        catch (Exception ex)
+        {
+            progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, isMove ? "MOVE" : "COPY", "FAIL", srcDir, destDir, ex.Message));
+            return (0, 0, 1, ex.Message, 0);
+        }
+
+        string[] entries;
+        try { entries = Directory.GetFileSystemEntries(srcDir); }
+        catch (Exception ex)
+        {
+            progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, isMove ? "MOVE" : "COPY", "FAIL", srcDir, destDir, ex.Message));
+            return (0, 0, 1, ex.Message, 0);
+        }
+
+        foreach (string entry in entries)
+        {
+            ct.ThrowIfCancellationRequested();
+            string entryDest = Path.Combine(destDir, Path.GetFileName(entry));
+
+            if (Directory.Exists(entry))
+            {
+                var sub = await CopyOrMoveDirectoryAsync(entry, entryDest, progress, onConflict, ct, isMove);
+                succeeded += sub.Succeeded; skipped += sub.Skipped; failed += sub.Failed;
+                firstError ??= sub.FirstError;
+                bytes += sub.Bytes;
+            }
+            else
+            {
+                var (outcome, fileBytes, error) = await CopyOrMoveFileAsync(entry, entryDest, progress, onConflict, ct, isMove);
+                bytes += fileBytes;
+                switch (outcome)
+                {
+                    case ItemOutcome.Succeeded: succeeded++; break;
+                    case ItemOutcome.Skipped: skipped++; break;
+                    case ItemOutcome.Failed: failed++; firstError ??= error; break;
+                    case ItemOutcome.Cancelled: throw new OperationCanceledException(ct);
+                }
+            }
+        }
+
+        if (isMove)
+        {
+            try { if (!Directory.EnumerateFileSystemEntries(srcDir).Any()) Directory.Delete(srcDir); }
+            catch { }
+        }
+
+        return (succeeded, skipped, failed, firstError, bytes);
     }
 }
 
