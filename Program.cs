@@ -3267,7 +3267,11 @@ static class Program
     static string BuildJobResultSummary(BackgroundJob job)
     {
         if (job.Status == JobStatus.Cancelled)
-            return $"キャンセル: {job.DoneCount}/{job.TotalCount}件処理済み";
+        {
+            int doneCount, totalCount;
+            lock (JobManager.ProgressLock) { doneCount = job.DoneCount; totalCount = job.TotalCount; }
+            return $"キャンセル: {doneCount}/{totalCount}件処理済み";
+        }
 
         FileOpResult? result = job.Result;
         if (result == null)
