@@ -517,7 +517,7 @@ enum ConflictResolution { Overwrite, Skip, Rename }
 
 sealed record ConflictDecision(ConflictResolution Resolution, string? NewName = null);
 
-sealed record FileOpResult(int Succeeded, int Skipped, int Failed, string? FirstError);
+sealed record FileOpResult(int Succeeded, int Skipped, int Failed, string? FirstError, bool WasCancelled = false);
 
 sealed record FileOpProgressInfo(int DoneCount, int TotalCount, long BytesTransferred, string CurrentFile);
 
@@ -552,6 +552,7 @@ static class FileOpEngine
         string? firstError = null;
         long bytesTransferred = 0;
         int doneCount = 0;
+        bool wasCancelled = false;
 
         int totalCount = 0;
         foreach (string src in sources)
@@ -559,7 +560,7 @@ static class FileOpEngine
 
         foreach (string src in sources)
         {
-            ct.ThrowIfCancellationRequested();
+            if (ct.IsCancellationRequested) { wasCancelled = true; break; }
             string name = Path.GetFileName(src.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
             string dest = Path.Combine(destDir, name);
 
@@ -581,6 +582,7 @@ static class FileOpEngine
                 bytesTransferred += sub.Bytes;
                 doneCount += sub.Succeeded + sub.Skipped + sub.Failed;
                 progress.Report(new FileOpProgressInfo(doneCount, totalCount, bytesTransferred, src));
+                if (sub.WasCancelled) { wasCancelled = true; break; }
             }
             else
             {
@@ -593,12 +595,13 @@ static class FileOpEngine
                     case ItemOutcome.Succeeded: succeeded++; break;
                     case ItemOutcome.Skipped: skipped++; break;
                     case ItemOutcome.Failed: failed++; firstError ??= error; break;
-                    case ItemOutcome.Cancelled: throw new OperationCanceledException(ct);
+                    case ItemOutcome.Cancelled: wasCancelled = true; break;
                 }
+                if (wasCancelled) break;
             }
         }
 
-        return new FileOpResult(succeeded, skipped, failed, firstError);
+        return new FileOpResult(succeeded, skipped, failed, firstError, wasCancelled);
     }
 
     static int CountUnits(string path)
@@ -740,7 +743,7 @@ static class FileOpEngine
         catch { }
     }
 
-    static async Task<(int Succeeded, int Skipped, int Failed, string? FirstError, long Bytes)> CopyOrMoveDirectoryAsync(
+    static async Task<(int Succeeded, int Skipped, int Failed, string? FirstError, long Bytes, bool WasCancelled)> CopyOrMoveDirectoryAsync(
         string srcDir, string destDir, IFileOpProgress progress,
         Func<string, Task<ConflictDecision?>> onConflict, CancellationToken ct, bool isMove)
     {
@@ -752,7 +755,7 @@ static class FileOpEngine
         catch (Exception ex)
         {
             progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, isMove ? "MOVE" : "COPY", "FAIL", srcDir, destDir, ex.Message));
-            return (0, 0, 1, ex.Message, 0);
+            return (0, 0, 1, ex.Message, 0, false);
         }
 
         string[] entries;
@@ -760,12 +763,14 @@ static class FileOpEngine
         catch (Exception ex)
         {
             progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, isMove ? "MOVE" : "COPY", "FAIL", srcDir, destDir, ex.Message));
-            return (0, 0, 1, ex.Message, 0);
+            return (0, 0, 1, ex.Message, 0, false);
         }
 
         foreach (string entry in entries)
         {
-            ct.ThrowIfCancellationRequested();
+            if (ct.IsCancellationRequested)
+                return (succeeded, skipped, failed, firstError, bytes, true);
+
             string entryDest = Path.Combine(destDir, Path.GetFileName(entry));
 
             if (Directory.Exists(entry))
@@ -774,6 +779,8 @@ static class FileOpEngine
                 succeeded += sub.Succeeded; skipped += sub.Skipped; failed += sub.Failed;
                 firstError ??= sub.FirstError;
                 bytes += sub.Bytes;
+                if (sub.WasCancelled)
+                    return (succeeded, skipped, failed, firstError, bytes, true);
             }
             else
             {
@@ -784,7 +791,8 @@ static class FileOpEngine
                     case ItemOutcome.Succeeded: succeeded++; break;
                     case ItemOutcome.Skipped: skipped++; break;
                     case ItemOutcome.Failed: failed++; firstError ??= error; break;
-                    case ItemOutcome.Cancelled: throw new OperationCanceledException(ct);
+                    case ItemOutcome.Cancelled:
+                        return (succeeded, skipped, failed, firstError, bytes, true);
                 }
             }
         }
@@ -795,7 +803,7 @@ static class FileOpEngine
             catch { }
         }
 
-        return (succeeded, skipped, failed, firstError, bytes);
+        return (succeeded, skipped, failed, firstError, bytes, false);
     }
 }
 
@@ -860,7 +868,7 @@ static class JobManager
                     lock (_lock)
                     {
                         job.Result = result;
-                        job.Status = JobStatus.Completed;
+                        job.Status = result.WasCancelled ? JobStatus.Cancelled : JobStatus.Completed;
                         job.EndTime = DateTime.Now;
                     }
                 }
@@ -1348,10 +1356,28 @@ static class JobListFormatter
             _ => job.Status.ToString(),
         };
 
-        int doneCount, totalCount;
-        lock (JobManager.ProgressLock) { doneCount = job.DoneCount; totalCount = job.TotalCount; }
-
-        int percent = totalCount > 0 ? (int)(doneCount * 100L / totalCount) : 0;
+        // Pending/Running は「処理中」の生カウンタ(doneCount は成功/失敗を問わず処理済み件数)を
+        // そのまま表示してよいが、終了後は誤解を招く(キャンセル時の最後の1件は未完了でも
+        // カウントされる)ため、確定した内訳(FileOpResult)がある場合はそちらを使う。
+        string progressLabel;
+        if (job.Status == JobStatus.Pending || job.Status == JobStatus.Running)
+        {
+            int doneCount, totalCount;
+            lock (JobManager.ProgressLock) { doneCount = job.DoneCount; totalCount = job.TotalCount; }
+            int percent = totalCount > 0 ? (int)(doneCount * 100L / totalCount) : 0;
+            progressLabel = $"{percent}% ({doneCount}/{totalCount})";
+        }
+        else if (job.Result is { } result)
+        {
+            var parts = new List<string> { $"{result.Succeeded}件成功" };
+            if (result.Skipped > 0) parts.Add($"{result.Skipped}件スキップ");
+            if (result.Failed > 0) parts.Add($"{result.Failed}件失敗");
+            progressLabel = string.Join("/", parts);
+        }
+        else
+        {
+            progressLabel = "未着手";
+        }
 
         // 複数選択時も送り元が識別できるよう、件数だけでなく元フォルダ名も添える
         // (GetOperationTargets は単一カラム内のマークから対象を組み立てるため、
@@ -1371,7 +1397,7 @@ static class JobListFormatter
         }
         string dstLabel = System.IO.Path.GetFileName(job.DestDir.TrimEnd('\\', '/'));
 
-        string row = $"#{job.ShortId} {job.OpName} {statusText} {percent}% ({doneCount}/{totalCount}) {srcLabel} -> {dstLabel}";
+        string row = $"#{job.ShortId} {job.OpName} {statusText} {progressLabel} {srcLabel} -> {dstLabel}";
         return CharacterWidth.SmartTruncate(row, width);
     }
 }
@@ -3419,14 +3445,21 @@ static class Program
 
     static string BuildJobResultSummary(BackgroundJob job)
     {
+        FileOpResult? result = job.Result;
+
         if (job.Status == JobStatus.Cancelled)
         {
-            int doneCount, totalCount;
-            lock (JobManager.ProgressLock) { doneCount = job.DoneCount; totalCount = job.TotalCount; }
-            return $"キャンセル: {doneCount}/{totalCount}件処理済み";
+            // result は work() が実際に開始していれば(RunBatchAsync が WasCancelled=true で
+            // 返した)常に設定されている。null は semaphore 待ち中などまだ着手前のキャンセルのみ。
+            if (result == null)
+                return $"{job.OpName} #{job.ShortId}: キャンセル(未着手)";
+
+            var parts = new List<string> { $"{result.Succeeded}件成功" };
+            if (result.Skipped > 0) parts.Add($"{result.Skipped}件スキップ");
+            if (result.Failed > 0) parts.Add($"{result.Failed}件失敗");
+            return $"{job.OpName} #{job.ShortId}: キャンセル({string.Join(" / ", parts)})";
         }
 
-        FileOpResult? result = job.Result;
         if (result == null)
             return $"{job.OpName} #{job.ShortId}: 完了";
 

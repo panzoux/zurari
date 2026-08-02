@@ -8,6 +8,22 @@ public class FileOpEngineTests
         public void ReportItemResult(OpLogEntry entry) { }
     }
 
+    // Cancels the token once Report has fired `cancelAfter` times, simulating a user cancelling
+    // mid-batch after some items have already succeeded.
+    sealed class CancelAfterNProgress : IFileOpProgress
+    {
+        readonly CancellationTokenSource _cts;
+        readonly int _cancelAfter;
+        int _count;
+        public CancelAfterNProgress(CancellationTokenSource cts, int cancelAfter) { _cts = cts; _cancelAfter = cancelAfter; }
+        public void Report(FileOpProgressInfo info)
+        {
+            _count++;
+            if (_count >= _cancelAfter) _cts.Cancel();
+        }
+        public void ReportItemResult(OpLogEntry entry) { }
+    }
+
     static string NewTempDir()
     {
         string dir = Path.Combine(Path.GetTempPath(), "zurari-test-" + Guid.NewGuid().ToString("N"));
@@ -153,10 +169,47 @@ public class FileOpEngineTests
             using var cts = new CancellationTokenSource();
             cts.Cancel();
 
-            await Assert.ThrowsAsync<OperationCanceledException>(() =>
-                FileOpEngine.CopyAsync(new[] { srcFile }, destDir, new NullProgress(), NeverAsked(), cts.Token));
+            // RunBatchAsync no longer throws on cancellation — it returns a partial FileOpResult
+            // with WasCancelled=true so callers (JobManager, job list/summary UI) can report an
+            // accurate succeeded/skipped/failed breakdown even when a job was cancelled mid-run.
+            var result = await FileOpEngine.CopyAsync(new[] { srcFile }, destDir, new NullProgress(), NeverAsked(), cts.Token);
 
+            Assert.True(result.WasCancelled);
+            Assert.Equal(0, result.Succeeded);
             Assert.False(File.Exists(Path.Combine(destDir, "big.bin")));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task CopyAsync_CancelledMidBatch_ReturnsPartialSucceededCount()
+    {
+        string root = NewTempDir();
+        try
+        {
+            string srcDir = Path.Combine(root, "src");
+            string destDir = Path.Combine(root, "dest");
+            Directory.CreateDirectory(srcDir);
+            Directory.CreateDirectory(destDir);
+            string fileA = Path.Combine(srcDir, "a.txt");
+            string fileB = Path.Combine(srcDir, "b.txt");
+            string fileC = Path.Combine(srcDir, "c.txt");
+            File.WriteAllText(fileA, "a");
+            File.WriteAllText(fileB, "b");
+            File.WriteAllText(fileC, "c");
+
+            using var cts = new CancellationTokenSource();
+            // Cancel is requested right after the 1st item's progress is reported, so item 1
+            // finishes normally and items 2-3 are never attempted.
+            var progress = new CancelAfterNProgress(cts, cancelAfter: 1);
+
+            var result = await FileOpEngine.CopyAsync(new[] { fileA, fileB, fileC }, destDir, progress, NeverAsked(), cts.Token);
+
+            Assert.True(result.WasCancelled);
+            Assert.Equal(1, result.Succeeded);
+            Assert.True(File.Exists(Path.Combine(destDir, "a.txt")));
+            Assert.False(File.Exists(Path.Combine(destDir, "b.txt")));
+            Assert.False(File.Exists(Path.Combine(destDir, "c.txt")));
         }
         finally { Directory.Delete(root, true); }
     }

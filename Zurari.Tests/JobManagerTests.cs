@@ -11,6 +11,14 @@ public class JobManagerTests
         return new FileOpResult(0, 0, 0, null);
     }
 
+    // Simulates FileOpEngine.RunBatchAsync's actual contract: cancellation is reported by
+    // returning normally with WasCancelled=true, not by throwing.
+    static async Task<FileOpResult> SucceedsOneThenReportsCancelled(BackgroundJob job, CancellationToken ct)
+    {
+        await Task.Delay(20, CancellationToken.None);
+        return new FileOpResult(1, 0, 0, null, WasCancelled: true);
+    }
+
     static async Task WaitUntilAsync(Func<bool> condition, int timeoutMs = 3000)
     {
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
@@ -32,6 +40,19 @@ public class JobManagerTests
         Assert.Equal(JobStatus.Completed, snap.Status);
         Assert.NotNull(snap.Result);
         Assert.Equal(1, snap.Result!.Succeeded);
+    }
+
+    [Fact]
+    public async Task Start_WorkReturnsWasCancelled_StatusBecomesCancelledWithPartialResult()
+    {
+        var job = JobManager.Start("コピー", new[] { "a" }, "dest", SucceedsOneThenReportsCancelled);
+        await WaitUntilAsync(() => JobManager.Snapshot().Find(j => j.ShortId == job.ShortId)!.Status == JobStatus.Cancelled);
+
+        var snap = JobManager.Snapshot().Find(j => j.ShortId == job.ShortId)!;
+        Assert.Equal(JobStatus.Cancelled, snap.Status);
+        Assert.NotNull(snap.Result);
+        Assert.Equal(1, snap.Result!.Succeeded);
+        Assert.True(snap.Result!.WasCancelled);
     }
 
     [Fact]
