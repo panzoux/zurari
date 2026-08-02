@@ -949,6 +949,36 @@ static class JobManager
     }
 }
 
+static class PathOverlapHelper
+{
+    // a と b が同一パス、または一方が他方のディレクトリ配下であれば true。
+    // 前方一致は「セパレータ境界」でのみ成立させる(C:\a と C:\ab を誤って重複と判定しない)。
+    public static bool PathsOverlap(string a, string b)
+    {
+        string na = NormalizeForOverlap(a);
+        string nb = NormalizeForOverlap(b);
+
+        if (string.Equals(na, nb, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        string naWithSep = na.EndsWith("\\", StringComparison.Ordinal) ? na : na + "\\";
+        string nbWithSep = nb.EndsWith("\\", StringComparison.Ordinal) ? nb : nb + "\\";
+
+        if (nb.StartsWith(naWithSep, StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (na.StartsWith(nbWithSep, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return false;
+    }
+
+    private static string NormalizeForOverlap(string path)
+    {
+        string full = System.IO.Path.GetFullPath(path);
+        return full.TrimEnd('\\', '/');
+    }
+}
+
 sealed class Column
 {
     public string Path;
