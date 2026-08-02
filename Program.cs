@@ -3383,7 +3383,7 @@ static class Program
         BackgroundJob job = JobManager.Start(opName, targets, destDir, (jobRef, ct) =>
         {
             var progress = new JobFileOpProgress(jobRef);
-            Task<ConflictDecision?> OnConflict(string destName) => RequestConflictAsync(jobRef.ShortId, destName);
+            Task<ConflictDecision?> OnConflict(string destName) => RequestConflictAsync(jobRef.ShortId, jobRef.OpName, destName);
             return isMove
                 ? FileOpEngine.MoveAsync(targets, destDir, progress, OnConflict, ct)
                 : FileOpEngine.CopyAsync(targets, destDir, progress, OnConflict, ct);
@@ -4977,7 +4977,7 @@ static class Program
         State.Dialog = dialog;
     }
 
-    static Task<ConflictDecision?> RequestConflictAsync(int jobShortId, string destName)
+    static Task<ConflictDecision?> RequestConflictAsync(int jobShortId, string opName, string destName)
     {
         var tcs = new TaskCompletionSource<ConflictDecision?>();
 
@@ -4989,7 +4989,7 @@ static class Program
                 return tcs.Task;
             }
 
-            _dialogRequestQueue.Enqueue(() => ShowConflictChoiceDialog(jobShortId, destName, tcs));
+            _dialogRequestQueue.Enqueue(() => ShowConflictChoiceDialog(jobShortId, opName, destName, tcs));
         }
 
         return tcs.Task;
@@ -4998,10 +4998,10 @@ static class Program
     // 衝突選択の一覧を表示する。リネーム入力で Esc された場合はジョブ全体をキャンセルせず、
     // この一覧に戻ってやり直させる(スキップしたいなら「スキップ」を明示的に選ばせる)。
     // 一覧自体で Esc された場合のみジョブキャンセル。
-    static void ShowConflictChoiceDialog(int jobShortId, string destName, TaskCompletionSource<ConflictDecision?> tcs)
+    static void ShowConflictChoiceDialog(int jobShortId, string opName, string destName, TaskCompletionSource<ConflictDecision?> tcs)
     {
         var options = new List<string> { "上書き", "すべて上書き", "スキップ", "すべてスキップ", "リネーム" };
-        ShowListSelect($"#{jobShortId} 衝突: {destName}", options, choice =>
+        ShowListSelect($"#{jobShortId} {opName} 衝突: \"{destName}\"", options, choice =>
         {
             switch (choice)
             {
@@ -5023,12 +5023,12 @@ static class Program
                     tcs.SetResult(new ConflictDecision(ConflictResolution.Skip));
                     break;
                 case "リネーム":
-                    ShowTextInput("新しい名前", destName, newName =>
+                    ShowTextInput($"新しい名前(元: \"{destName}\")", destName, newName =>
                     {
                         if (newName == null)
                         {
                             // Esc: リネーム入力のみ取り消し、衝突選択に戻る(ジョブはキャンセルしない)
-                            ShowConflictChoiceDialog(jobShortId, destName, tcs);
+                            ShowConflictChoiceDialog(jobShortId, opName, destName, tcs);
                             return;
                         }
                         tcs.SetResult(new ConflictDecision(ConflictResolution.Rename, newName));
@@ -6351,7 +6351,9 @@ static class Program
             {
                 string beforeCursor = textInput.Buffer.Substring(0, textInput.CursorPos);
                 string atAndAfterCursor = textInput.Buffer.Substring(textInput.CursorPos);
-                string displayLine = beforeCursor + "\x1b[7m \x1b[0m" + atAndAfterCursor;
+                // 反転スペースだけだと配色によっては見えにくいため、実体のある全角ブロックを
+                // 反転表示することで、入力欄であることとカーソル位置の両方を分かりやすくする。
+                string displayLine = beforeCursor + "\x1b[7m█\x1b[0m" + atAndAfterCursor;
                 return new List<string>
                 {
                     displayLine,
