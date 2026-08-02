@@ -4956,42 +4956,53 @@ static class Program
                 return tcs.Task;
             }
 
-            _dialogRequestQueue.Enqueue(() =>
-            {
-                var options = new List<string> { "上書き", "すべて上書き", "スキップ", "すべてスキップ", "リネーム" };
-                ShowListSelect($"#{jobShortId} 衝突: {destName}", options, choice =>
-                {
-                    switch (choice)
-                    {
-                        case null:
-                            tcs.SetResult(null); // Esc = ジョブキャンセル
-                            break;
-                        case "上書き":
-                            tcs.SetResult(new ConflictDecision(ConflictResolution.Overwrite));
-                            break;
-                        case "すべて上書き":
-                            lock (_dialogQueueLock) { _jobStickyChoice[jobShortId] = ConflictResolution.Overwrite; }
-                            tcs.SetResult(new ConflictDecision(ConflictResolution.Overwrite));
-                            break;
-                        case "スキップ":
-                            tcs.SetResult(new ConflictDecision(ConflictResolution.Skip));
-                            break;
-                        case "すべてスキップ":
-                            lock (_dialogQueueLock) { _jobStickyChoice[jobShortId] = ConflictResolution.Skip; }
-                            tcs.SetResult(new ConflictDecision(ConflictResolution.Skip));
-                            break;
-                        case "リネーム":
-                            ShowTextInput("新しい名前", destName, newName =>
-                            {
-                                tcs.SetResult(newName == null ? null : new ConflictDecision(ConflictResolution.Rename, newName));
-                            });
-                            break;
-                    }
-                });
-            });
+            _dialogRequestQueue.Enqueue(() => ShowConflictChoiceDialog(jobShortId, destName, tcs));
         }
 
         return tcs.Task;
+    }
+
+    // 衝突選択の一覧を表示する。リネーム入力で Esc された場合はジョブ全体をキャンセルせず、
+    // この一覧に戻ってやり直させる(スキップしたいなら「スキップ」を明示的に選ばせる)。
+    // 一覧自体で Esc された場合のみジョブキャンセル。
+    static void ShowConflictChoiceDialog(int jobShortId, string destName, TaskCompletionSource<ConflictDecision?> tcs)
+    {
+        var options = new List<string> { "上書き", "すべて上書き", "スキップ", "すべてスキップ", "リネーム" };
+        ShowListSelect($"#{jobShortId} 衝突: {destName}", options, choice =>
+        {
+            switch (choice)
+            {
+                case null:
+                    tcs.SetResult(null); // Esc = ジョブキャンセル
+                    break;
+                case "上書き":
+                    tcs.SetResult(new ConflictDecision(ConflictResolution.Overwrite));
+                    break;
+                case "すべて上書き":
+                    lock (_dialogQueueLock) { _jobStickyChoice[jobShortId] = ConflictResolution.Overwrite; }
+                    tcs.SetResult(new ConflictDecision(ConflictResolution.Overwrite));
+                    break;
+                case "スキップ":
+                    tcs.SetResult(new ConflictDecision(ConflictResolution.Skip));
+                    break;
+                case "すべてスキップ":
+                    lock (_dialogQueueLock) { _jobStickyChoice[jobShortId] = ConflictResolution.Skip; }
+                    tcs.SetResult(new ConflictDecision(ConflictResolution.Skip));
+                    break;
+                case "リネーム":
+                    ShowTextInput("新しい名前", destName, newName =>
+                    {
+                        if (newName == null)
+                        {
+                            // Esc: リネーム入力のみ取り消し、衝突選択に戻る(ジョブはキャンセルしない)
+                            ShowConflictChoiceDialog(jobShortId, destName, tcs);
+                            return;
+                        }
+                        tcs.SetResult(new ConflictDecision(ConflictResolution.Rename, newName));
+                    });
+                    break;
+            }
+        });
     }
 
     // 開いているダイアログを閉じ、結果コールバックを呼ぶ共通クローズ処理。
