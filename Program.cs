@@ -1353,9 +1353,22 @@ static class JobListFormatter
 
         int percent = totalCount > 0 ? (int)(doneCount * 100L / totalCount) : 0;
 
-        string srcLabel = job.SourcePaths.Count == 1
-            ? System.IO.Path.GetFileName(job.SourcePaths[0].TrimEnd('\\', '/'))
-            : $"{job.SourcePaths.Count}件";
+        // 複数選択時も送り元が識別できるよう、件数だけでなく元フォルダ名も添える
+        // (GetOperationTargets は単一カラム内のマークから対象を組み立てるため、
+        // SourcePaths は常に同じ親ディレクトリを共有する)。
+        string srcLabel;
+        if (job.SourcePaths.Count == 1)
+        {
+            srcLabel = System.IO.Path.GetFileName(job.SourcePaths[0].TrimEnd('\\', '/'));
+        }
+        else
+        {
+            string? parentDir = System.IO.Path.GetDirectoryName(job.SourcePaths[0].TrimEnd('\\', '/'));
+            string parentName = string.IsNullOrEmpty(parentDir) ? "" : System.IO.Path.GetFileName(parentDir.TrimEnd('\\', '/'));
+            srcLabel = string.IsNullOrEmpty(parentName)
+                ? $"{job.SourcePaths.Count}件"
+                : $"{parentName}({job.SourcePaths.Count}件)";
+        }
         string dstLabel = System.IO.Path.GetFileName(job.DestDir.TrimEnd('\\', '/'));
 
         string row = $"#{job.ShortId} {job.OpName} {statusText} {percent}% ({doneCount}/{totalCount}) {srcLabel} -> {dstLabel}";
