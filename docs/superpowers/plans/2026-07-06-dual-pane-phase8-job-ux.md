@@ -569,4 +569,13 @@ git commit -m "feat: refresh affected columns every 500ms while jobs are active"
 
 ## 未解決事項
 
-(実行セッションが判断保留を記録する欄。空のまま残すこと)
+- Task 5(実行中の500ms間引き影響カラム再読込)は、実装開始時点で Phase 7 のコードに既に存在していた
+  (`RefreshActiveJobColumnsAsync()` + `_lastActiveJobRefreshTime`、メインループから毎ループ呼び出し済み)。
+  `JobManager.Snapshot()` から `Status == JobStatus.Running` のジョブのみを対象に 500ms 間引きで
+  `RefreshAffectedColumnsAsync(job)`(宛先ディレクトリ+各ソースの親ディレクトリを OrdinalIgnoreCase で
+  再読込、Leap/Search アクティブ時は `NeedsRefresh` で遅延)を呼んでおり、本計画が要求する挙動を満たして
+  いたため、Task 5 では新規コードを追加していない(判断保留ではなく、確認のみで完了)。
+  唯一の差異は対象ジョブを `Running` のみに限定している点(計画の擬似コードは `HasActiveJobs`
+  = Pending+Running を対象にしていた)。Pending は semaphore 待ちでまだファイルシステムに触れていない
+  ため、Running のみを対象にする現状の実装の方が正しい(無駄な再読込を避けられる)と判断し、そのまま
+  維持した。
