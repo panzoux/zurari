@@ -1327,6 +1327,42 @@ sealed class ListSelectDialogState : DialogState
     public Action<string?> OnResult = _ => { }; // 確定項目の文字列 or null
 }
 
+sealed class JobListDialogState : DialogState
+{
+    public List<BackgroundJob> Snapshot = new();
+    public int Selected;
+}
+
+static class JobListFormatter
+{
+    // 例: "#3 コピー Running 45% (12/40) src -> dst"
+    public static string FormatRow(BackgroundJob job, int width)
+    {
+        string statusText = job.Status switch
+        {
+            JobStatus.Pending => "Pending",
+            JobStatus.Running => "Running",
+            JobStatus.Completed => "Completed",
+            JobStatus.Failed => "Failed",
+            JobStatus.Cancelled => "Cancelled",
+            _ => job.Status.ToString(),
+        };
+
+        int doneCount, totalCount;
+        lock (JobManager.ProgressLock) { doneCount = job.DoneCount; totalCount = job.TotalCount; }
+
+        int percent = totalCount > 0 ? (int)(doneCount * 100L / totalCount) : 0;
+
+        string srcLabel = job.SourcePaths.Count == 1
+            ? System.IO.Path.GetFileName(job.SourcePaths[0].TrimEnd('\\', '/'))
+            : $"{job.SourcePaths.Count}件";
+        string dstLabel = System.IO.Path.GetFileName(job.DestDir.TrimEnd('\\', '/'));
+
+        string row = $"#{job.ShortId} {job.OpName} {statusText} {percent}% ({doneCount}/{totalCount}) {srcLabel} -> {dstLabel}";
+        return CharacterWidth.SmartTruncate(row, width);
+    }
+}
+
 readonly record struct DialogRect(int X, int Y, int Width, int Height);
 
 static class DialogLayout
@@ -2671,6 +2707,7 @@ static class Program
     static string? _cachedJobSummary = null;
     static readonly Dictionary<int, JobStatus> _lastKnownJobStatus = new();
     static DateTime _lastActiveJobRefreshTime = DateTime.MinValue;
+    static DateTime _lastJobPollTime = DateTime.MinValue;
     static bool _shouldExit = false;
     static string? _missingEntryMessage = null;
     static Column? _missingEntryColumn = null;
@@ -2767,6 +2804,15 @@ static class Program
                         UpdateHorizontalScroll(pane);
                         await RebuildRightSideAsync(pane, pane.ActiveColumn);
                         if (pane.Preview.IsVisible) StartPreviewLoad(pane);
+                        _redrawGate.Request();
+                    }
+                    else if (State.Dialog is JobListDialogState openJobList
+                        && (DateTime.UtcNow - _lastJobPollTime).TotalMilliseconds >= 100)
+                    {
+                        int previousSelected = openJobList.Selected;
+                        openJobList.Snapshot = JobManager.Snapshot();
+                        openJobList.Selected = Math.Min(previousSelected, Math.Max(0, openJobList.Snapshot.Count - 1));
+                        _lastJobPollTime = DateTime.UtcNow;
                         _redrawGate.Request();
                     }
                     System.Threading.Thread.Sleep(50);
@@ -3048,6 +3094,13 @@ static class Program
             case ConsoleKey.L:
                 if ((key.Modifiers & ConsoleModifiers.Control) != 0)
                     RefreshCurrent(pane);
+                break;
+
+            case ConsoleKey.J:
+                if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
+                {
+                    ShowJobList();
+                }
                 break;
 
             case ConsoleKey.W:
@@ -4843,6 +4896,17 @@ static class Program
         };
     }
 
+    static void ShowJobList()
+    {
+        var dialog = new JobListDialogState
+        {
+            Title = "ジョブ一覧",
+            Snapshot = JobManager.Snapshot(),
+            Selected = 0,
+        };
+        State.Dialog = dialog;
+    }
+
     static Task<ConflictDecision?> RequestConflictAsync(int jobShortId, string destName)
     {
         var tcs = new TaskCompletionSource<ConflictDecision?>();
@@ -4931,9 +4995,50 @@ static class Program
             case ListSelectDialogState listSelect:
                 HandleListSelectDialogKey(listSelect, key);
                 break;
+
+            case JobListDialogState jobList:
+                HandleJobListDialogKey(jobList, key);
+                break;
         }
 
         return Task.CompletedTask;
+    }
+
+    static void HandleJobListDialogKey(JobListDialogState dialog, ConsoleKeyInfo key)
+    {
+        if (key.Key == ConsoleKey.Escape)
+        {
+            State.Dialog = null;
+            return;
+        }
+
+        if (key.Key == ConsoleKey.UpArrow)
+        {
+            if (dialog.Selected > 0) dialog.Selected--;
+            return;
+        }
+
+        if (key.Key == ConsoleKey.DownArrow)
+        {
+            if (dialog.Selected < dialog.Snapshot.Count - 1) dialog.Selected++;
+            return;
+        }
+
+        if (key.Key == ConsoleKey.Enter || key.Key == ConsoleKey.Delete)
+        {
+            if (dialog.Selected < 0 || dialog.Selected >= dialog.Snapshot.Count) return;
+
+            BackgroundJob target = dialog.Snapshot[dialog.Selected];
+            if (target.Status != JobStatus.Pending && target.Status != JobStatus.Running) return;
+
+            int shortId = target.ShortId;
+            ShowConfirm("ジョブキャンセル", $"#{shortId} {target.OpName} をキャンセルしますか?", confirmed =>
+            {
+                if (confirmed == true)
+                    JobManager.Cancel(shortId);
+                ShowJobList(); // 一覧を最新状態で再表示
+            });
+        }
     }
 
     static void HandleConfirmDialogKey(ConfirmDialogState dialog, ConsoleKeyInfo key)
@@ -6211,6 +6316,42 @@ static class Program
 
                 lines.Add("");
                 lines.Add("[↑↓]選択  [Enter]確定  [Esc]キャンセル");
+                return lines;
+            }
+
+            case JobListDialogState jobListDlg:
+            {
+                const int rowWidth = 76;
+                var lines = new List<string>();
+
+                if (jobListDlg.Snapshot.Count == 0)
+                {
+                    lines.Add("(ジョブなし)");
+                }
+                else
+                {
+                    const int maxVisibleRows = 12;
+                    int total = jobListDlg.Snapshot.Count;
+                    int visibleRows = Math.Min(maxVisibleRows, total);
+
+                    int scrollStart = 0;
+                    if (jobListDlg.Selected >= visibleRows)
+                        scrollStart = jobListDlg.Selected - visibleRows + 1;
+                    scrollStart = Math.Min(scrollStart, Math.Max(0, total - visibleRows));
+
+                    for (int i = 0; i < visibleRows; i++)
+                    {
+                        int idx = scrollStart + i;
+                        if (idx >= total) break;
+                        string rowText = JobListFormatter.FormatRow(jobListDlg.Snapshot[idx], rowWidth);
+                        if (idx == jobListDlg.Selected)
+                            rowText = "\x1b[7m" + rowText + "\x1b[0m";
+                        lines.Add(rowText);
+                    }
+                }
+
+                lines.Add("");
+                lines.Add("[↑↓]選択  [Enter/Delete]キャンセル  [Esc]閉じる");
                 return lines;
             }
 
