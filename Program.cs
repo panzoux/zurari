@@ -979,6 +979,26 @@ static class PathOverlapHelper
     }
 }
 
+static class BusyWarningHelper
+{
+    // targetPaths のいずれかが実行中ジョブの busy パスと重なれば true(= 警告が必要)。
+    public static bool AnyOverlapsBusyPaths(IReadOnlyList<string> targetPaths)
+    {
+        List<string> busyPaths = JobManager.GetBusyPaths();
+        if (busyPaths.Count == 0) return false;
+
+        foreach (string target in targetPaths)
+        {
+            foreach (string busy in busyPaths)
+            {
+                if (PathOverlapHelper.PathsOverlap(target, busy))
+                    return true;
+            }
+        }
+        return false;
+    }
+}
+
 sealed class Column
 {
     public string Path;
@@ -3229,8 +3249,21 @@ static class Program
 
     static void EnqueueCopyOrMoveJob(string opName, List<string> targets, string destDir, bool isMove)
     {
-        // busy パス警告(実行中ジョブと対象パスの重なり確認)は Phase 8 で本関数の冒頭に追加する。
-        // Phase 7 時点では警告なしで開始してよい(重なった場合の競合はエンジンの「失敗を記録して継続」が受け止める)。
+        if (BusyWarningHelper.AnyOverlapsBusyPaths(targets))
+        {
+            ShowConfirm("busy 警告", "実行中のジョブが対象パスを使用しています。続行しますか?", proceed =>
+            {
+                if (proceed == true)
+                    StartJobNow(opName, targets, destDir, isMove);
+            });
+            return;
+        }
+
+        StartJobNow(opName, targets, destDir, isMove);
+    }
+
+    static void StartJobNow(string opName, List<string> targets, string destDir, bool isMove)
+    {
         BackgroundJob job = JobManager.Start(opName, targets, destDir, (jobRef, ct) =>
         {
             var progress = new JobFileOpProgress(jobRef);
@@ -3903,6 +3936,21 @@ static class Program
         List<string> targets = GetOperationTargets(pane);
         if (targets.Count == 0) return;
 
+        if (BusyWarningHelper.AnyOverlapsBusyPaths(targets))
+        {
+            ShowConfirm("busy 警告", "実行中のジョブが対象パスを使用しています。続行しますか?", proceed =>
+            {
+                if (proceed == true)
+                    ShowDeleteConfirm(pane, targets);
+            });
+            return;
+        }
+
+        ShowDeleteConfirm(pane, targets);
+    }
+
+    static void ShowDeleteConfirm(Pane pane, List<string> targets)
+    {
         string message = targets.Count == 1
             ? $"{Path.GetFileName(targets[0].TrimEnd('/'))} を削除しますか?(ごみ箱へ)"
             : $"{targets.Count}件を削除しますか?(ごみ箱へ)";
@@ -3988,6 +4036,22 @@ static class Program
         if (!SelectedIsDeletable(pane, out Column col, out string name))
             return;
 
+        string targetPath = BuildFullPath(col.Path, name);
+        if (BusyWarningHelper.AnyOverlapsBusyPaths(new List<string> { targetPath }))
+        {
+            ShowConfirm("busy 警告", "実行中のジョブが対象パスを使用しています。続行しますか?", proceed =>
+            {
+                if (proceed == true)
+                    ShowRenameInput(pane, col, name);
+            });
+            return;
+        }
+
+        ShowRenameInput(pane, col, name);
+    }
+
+    static void ShowRenameInput(Pane pane, Column col, string name)
+    {
         bool isDir = name.EndsWith("/");
         string currentName = isDir ? name.TrimEnd('/') : name;
 
