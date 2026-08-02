@@ -1363,6 +1363,21 @@ static class JobListFormatter
     }
 }
 
+static class OperationLogFormatter
+{
+    // 例: "2026-07-06 14:32:10 [#3] COPY OK C:\src\a.txt -> C:\dst\a.txt"
+    public static string FormatEntry(OpLogEntry entry)
+    {
+        string jobLabel = entry.JobId.HasValue ? $"[#{entry.JobId.Value}]" : "[-]";
+        string line = $"{entry.Timestamp:yyyy-MM-dd HH:mm:ss} {jobLabel} {entry.Op} {entry.Result} {entry.Source} -> {entry.Dest}";
+        if (!string.IsNullOrEmpty(entry.Message))
+        {
+            line += $" {entry.Message}";
+        }
+        return line;
+    }
+}
+
 readonly record struct DialogRect(int X, int Y, int Width, int Height);
 
 static class DialogLayout
@@ -3093,7 +3108,16 @@ static class Program
 
             case ConsoleKey.L:
                 if ((key.Modifiers & ConsoleModifiers.Control) != 0)
+                {
                     RefreshCurrent(pane);
+                }
+                else if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
+                {
+                    List<string> logLines = new List<string>();
+                    foreach (OpLogEntry entry in OperationLog.Snapshot())
+                        logLines.Add(OperationLogFormatter.FormatEntry(entry));
+                    ShowListSelect("操作ログ", logLines, _ => { }); // 確定は閉じるのみ。選択結果は使わない
+                }
                 break;
 
             case ConsoleKey.J:
