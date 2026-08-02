@@ -812,7 +812,7 @@ enum JobStatus { Pending, Running, Completed, Failed, Cancelled }
 sealed class BackgroundJob
 {
     public int ShortId;
-    public string OpName = ""; // "コピー" / "移動"
+    public string OpName = ""; // "Copy" / "Move"
     public JobStatus Status;
     public int DoneCount;
     public int TotalCount;
@@ -1369,14 +1369,14 @@ static class JobListFormatter
         }
         else if (job.Result is { } result)
         {
-            var parts = new List<string> { $"{result.Succeeded}件成功" };
-            if (result.Skipped > 0) parts.Add($"{result.Skipped}件スキップ");
-            if (result.Failed > 0) parts.Add($"{result.Failed}件失敗");
+            var parts = new List<string> { $"{result.Succeeded} succeeded" };
+            if (result.Skipped > 0) parts.Add($"{result.Skipped} skipped");
+            if (result.Failed > 0) parts.Add($"{result.Failed} failed");
             progressLabel = string.Join("/", parts);
         }
         else
         {
-            progressLabel = "未着手";
+            progressLabel = "not started";
         }
 
         // 複数選択時も送り元が識別できるよう、件数だけでなく元フォルダ名も添える
@@ -1392,8 +1392,8 @@ static class JobListFormatter
             string? parentDir = System.IO.Path.GetDirectoryName(job.SourcePaths[0].TrimEnd('\\', '/'));
             string parentName = string.IsNullOrEmpty(parentDir) ? "" : System.IO.Path.GetFileName(parentDir.TrimEnd('\\', '/'));
             srcLabel = string.IsNullOrEmpty(parentName)
-                ? $"{job.SourcePaths.Count}件"
-                : $"{parentName}({job.SourcePaths.Count}件)";
+                ? $"{job.SourcePaths.Count} items"
+                : $"{parentName} ({job.SourcePaths.Count} items)";
         }
         string dstLabel = System.IO.Path.GetFileName(job.DestDir.TrimEnd('\\', '/'));
 
@@ -2902,7 +2902,7 @@ static class Program
                         if (JobManager.HasActiveJobs)
                         {
                             int activeCount = JobManager.Snapshot().FindAll(j => j.Status == JobStatus.Pending || j.Status == JobStatus.Running).Count;
-                            ShowConfirm("終了確認", $"実行中のジョブが{activeCount}件あります。すべてキャンセルして終了しますか?", async result =>
+                            ShowConfirm("Exit Confirmation", $"{activeCount} job(s) are still running. Cancel all and exit?", async result =>
                             {
                                 if (result == true)
                                 {
@@ -3155,7 +3155,7 @@ static class Program
                     List<string> logLines = new List<string>();
                     foreach (OpLogEntry entry in OperationLog.Snapshot())
                         logLines.Add(OperationLogFormatter.FormatEntry(entry));
-                    ShowListSelect("操作ログ", logLines, _ => { }); // 確定は閉じるのみ。選択結果は使わない
+                    ShowListSelect("Operation Log", logLines, _ => { }); // 確定は閉じるのみ。選択結果は使わない
                 }
                 break;
 
@@ -3314,18 +3314,18 @@ static class Program
     {
         if (pane.Columns[pane.ActiveColumn].Path == "::DRIVES::")
         {
-            _lastErrorMessage = isMove ? "ドライブ一覧は移動元にできません" : "ドライブ一覧はコピー元にできません";
+            _lastErrorMessage = isMove ? "Cannot move from the drive list" : "Cannot copy from the drive list";
             return;
         }
 
         List<string> targets = GetOperationTargets(pane);
         if (targets.Count == 0)
         {
-            _lastErrorMessage = isMove ? "移動対象がありません" : "コピー対象がありません";
+            _lastErrorMessage = isMove ? "No items to move" : "No items to copy";
             return;
         }
 
-        string opName = isMove ? "移動" : "コピー";
+        string opName = isMove ? "Move" : "Copy";
 
         if (State.SplitActive)
         {
@@ -3335,7 +3335,7 @@ static class Program
 
             if (destDir == "::DRIVES::")
             {
-                _lastErrorMessage = "ドライブ一覧を宛先にはできません";
+                _lastErrorMessage = "Cannot use the drive list as a destination";
                 return;
             }
 
@@ -3344,16 +3344,16 @@ static class Program
         else
         {
             List<string> candidates = BuildBookmarkAndHistoryList();
-            ShowListSelect("宛先を選択", candidates, dest =>
+            ShowListSelect("Select Destination", candidates, dest =>
             {
                 if (dest == null)
                 {
-                    _lastErrorMessage = $"{opName}をキャンセルしました";
+                    _lastErrorMessage = $"{opName} cancelled";
                     return;
                 }
                 if (dest == "::DRIVES::")
                 {
-                    _lastErrorMessage = "ドライブ一覧を宛先にはできません";
+                    _lastErrorMessage = "Cannot use the drive list as a destination";
                     return;
                 }
                 EnqueueCopyOrMoveJob(opName, targets, dest, isMove);
@@ -3367,7 +3367,7 @@ static class Program
     {
         if (BusyWarningHelper.AnyOverlapsBusyPaths(targets))
         {
-            ShowConfirm("busy 警告", "実行中のジョブが対象パスを使用しています。続行しますか?", proceed =>
+            ShowConfirm("Busy Warning", "An active job is using this path. Continue anyway?", proceed =>
             {
                 if (proceed == true)
                     StartJobNow(opName, targets, destDir, isMove);
@@ -3389,7 +3389,7 @@ static class Program
                 : FileOpEngine.CopyAsync(targets, destDir, progress, OnConflict, ct);
         });
 
-        _lastErrorMessage = $"{opName}開始: {targets.Count}件 → {destDir} (#{job.ShortId})";
+        _lastErrorMessage = $"{opName} started: {targets.Count} item(s) → {destDir} (#{job.ShortId})";
     }
 
     sealed class JobFileOpProgress : IFileOpProgress
@@ -3452,22 +3452,22 @@ static class Program
             // result は work() が実際に開始していれば(RunBatchAsync が WasCancelled=true で
             // 返した)常に設定されている。null は semaphore 待ち中などまだ着手前のキャンセルのみ。
             if (result == null)
-                return $"{job.OpName} #{job.ShortId}: キャンセル(未着手)";
+                return $"{job.OpName} #{job.ShortId}: Cancelled (not started)";
 
-            var parts = new List<string> { $"{result.Succeeded}件成功" };
-            if (result.Skipped > 0) parts.Add($"{result.Skipped}件スキップ");
-            if (result.Failed > 0) parts.Add($"{result.Failed}件失敗");
-            return $"{job.OpName} #{job.ShortId}: キャンセル({string.Join(" / ", parts)})";
+            var parts = new List<string> { $"{result.Succeeded} succeeded" };
+            if (result.Skipped > 0) parts.Add($"{result.Skipped} skipped");
+            if (result.Failed > 0) parts.Add($"{result.Failed} failed");
+            return $"{job.OpName} #{job.ShortId}: Cancelled ({string.Join(" / ", parts)})";
         }
 
         if (result == null)
-            return $"{job.OpName} #{job.ShortId}: 完了";
+            return $"{job.OpName} #{job.ShortId}: Done";
 
         if (result.Failed > 0)
-            return $"{job.OpName} #{job.ShortId}: {result.Succeeded}件完了 / {result.Failed}件失敗: {result.FirstError}";
+            return $"{job.OpName} #{job.ShortId}: {result.Succeeded} done / {result.Failed} failed: {result.FirstError}";
         if (result.Skipped > 0)
-            return $"{job.OpName} #{job.ShortId}: {result.Succeeded}件完了 / {result.Skipped}件スキップ";
-        return $"{job.OpName}完了: {result.Succeeded}件";
+            return $"{job.OpName} #{job.ShortId}: {result.Succeeded} done / {result.Skipped} skipped";
+        return $"{job.OpName} done: {result.Succeeded} item(s)";
     }
 
     static async Task RefreshAffectedColumnsAsync(BackgroundJob job)
@@ -4061,7 +4061,7 @@ static class Program
 
         if (BusyWarningHelper.AnyOverlapsBusyPaths(targets))
         {
-            ShowConfirm("busy 警告", "実行中のジョブが対象パスを使用しています。続行しますか?", proceed =>
+            ShowConfirm("Busy Warning", "An active job is using this path. Continue anyway?", proceed =>
             {
                 if (proceed == true)
                     ShowDeleteConfirm(pane, targets);
@@ -4075,11 +4075,11 @@ static class Program
     static void ShowDeleteConfirm(Pane pane, List<string> targets)
     {
         string message = targets.Count == 1
-            ? $"{Path.GetFileName(targets[0].TrimEnd('/'))} を削除しますか?(ごみ箱へ)"
-            : $"{targets.Count}件を削除しますか?(ごみ箱へ)";
+            ? $"Delete {Path.GetFileName(targets[0].TrimEnd('/'))}? (to Recycle Bin)"
+            : $"Delete {targets.Count} item(s)? (to Recycle Bin)";
 
         ShowConfirm(
-            "削除",
+            "Delete",
             message,
             async result =>
             {
@@ -4148,8 +4148,8 @@ static class Program
         }
 
         _lastErrorMessage = failCount == 0
-            ? $"削除完了: {okCount}件"
-            : $"削除: {okCount}件完了 / {failCount}件失敗: {firstError}";
+            ? $"Delete complete: {okCount} item(s)"
+            : $"Delete: {okCount} done / {failCount} failed: {firstError}";
 
         await RefreshCurrentAsync(pane);
     }
@@ -4162,7 +4162,7 @@ static class Program
         string targetPath = BuildFullPath(col.Path, name);
         if (BusyWarningHelper.AnyOverlapsBusyPaths(new List<string> { targetPath }))
         {
-            ShowConfirm("busy 警告", "実行中のジョブが対象パスを使用しています。続行しますか?", proceed =>
+            ShowConfirm("Busy Warning", "An active job is using this path. Continue anyway?", proceed =>
             {
                 if (proceed == true)
                     ShowRenameInput(pane, col, name);
@@ -4179,7 +4179,7 @@ static class Program
         string currentName = isDir ? name.TrimEnd('/') : name;
 
         ShowTextInput(
-            "リネーム",
+            "Rename",
             currentName,
             async newNameResult =>
             {
@@ -4210,7 +4210,7 @@ static class Program
         {
             result = "FAIL";
             message = ex.Message;
-            _lastErrorMessage = $"リネーム失敗: {ex.Message}";
+            _lastErrorMessage = $"Rename failed: {ex.Message}";
         }
 
         OperationLog.Append(new OpLogEntry(DateTime.UtcNow, null, "RENAME", result, oldFullPath, newFullPath, message));
@@ -4970,7 +4970,7 @@ static class Program
     {
         var dialog = new JobListDialogState
         {
-            Title = "ジョブ一覧",
+            Title = "Jobs",
             Snapshot = JobManager.Snapshot(),
             Selected = 0,
         };
@@ -5000,30 +5000,30 @@ static class Program
     // 一覧自体で Esc された場合のみジョブキャンセル。
     static void ShowConflictChoiceDialog(int jobShortId, string opName, string destName, TaskCompletionSource<ConflictDecision?> tcs)
     {
-        var options = new List<string> { "上書き", "すべて上書き", "スキップ", "すべてスキップ", "リネーム" };
-        ShowListSelect($"#{jobShortId} {opName} 衝突: \"{destName}\"", options, choice =>
+        var options = new List<string> { "Overwrite", "Overwrite All", "Skip", "Skip All", "Rename" };
+        ShowListSelect($"#{jobShortId} {opName} Conflict: \"{destName}\"", options, choice =>
         {
             switch (choice)
             {
                 case null:
                     tcs.SetResult(null); // Esc = ジョブキャンセル
                     break;
-                case "上書き":
+                case "Overwrite":
                     tcs.SetResult(new ConflictDecision(ConflictResolution.Overwrite));
                     break;
-                case "すべて上書き":
+                case "Overwrite All":
                     lock (_dialogQueueLock) { _jobStickyChoice[jobShortId] = ConflictResolution.Overwrite; }
                     tcs.SetResult(new ConflictDecision(ConflictResolution.Overwrite));
                     break;
-                case "スキップ":
+                case "Skip":
                     tcs.SetResult(new ConflictDecision(ConflictResolution.Skip));
                     break;
-                case "すべてスキップ":
+                case "Skip All":
                     lock (_dialogQueueLock) { _jobStickyChoice[jobShortId] = ConflictResolution.Skip; }
                     tcs.SetResult(new ConflictDecision(ConflictResolution.Skip));
                     break;
-                case "リネーム":
-                    ShowTextInput($"新しい名前(元: \"{destName}\")", destName, newName =>
+                case "Rename":
+                    ShowTextInput($"New name (was: \"{destName}\")", destName, newName =>
                     {
                         if (newName == null)
                         {
@@ -5113,7 +5113,7 @@ static class Program
             if (target.Status != JobStatus.Pending && target.Status != JobStatus.Running) return;
 
             int shortId = target.ShortId;
-            ShowConfirm("ジョブキャンセル", $"#{shortId} {target.OpName} をキャンセルしますか?", confirmed =>
+            ShowConfirm("Cancel Job", $"Cancel #{shortId} {target.OpName}?", confirmed =>
             {
                 if (confirmed == true)
                     JobManager.Cancel(shortId);
@@ -5471,13 +5471,13 @@ static class Program
         }
         catch
         {
-            _lastErrorMessage = $"無効なパス: {path}";
+            _lastErrorMessage = $"Invalid path: {path}";
             return;
         }
 
         if (!Directory.Exists(fullPath))
         {
-            _lastErrorMessage = $"パスが見つかりません: {path}";
+            _lastErrorMessage = $"Path not found: {path}";
             return;
         }
 
@@ -5509,7 +5509,7 @@ static class Program
             int driveIndex = rootColumn.Entries.IndexOf(driveEntry);
             if (driveIndex < 0)
             {
-                _lastErrorMessage = $"パスが見つかりません: {path}";
+                _lastErrorMessage = $"Path not found: {path}";
                 return;
             }
             rootColumn.Selected = driveIndex;
@@ -5529,7 +5529,7 @@ static class Program
             int idx = current.Entries.IndexOf(entryName);
             if (idx < 0)
             {
-                _lastErrorMessage = $"パスが見つかりません: {path}";
+                _lastErrorMessage = $"Path not found: {path}";
                 return;
             }
             current.Selected = idx;
@@ -5566,7 +5566,7 @@ static class Program
     {
         if (_history.Count == 0)
         {
-            _lastErrorMessage = "ヒストリはまだありません";
+            _lastErrorMessage = "No history yet";
             return;
         }
 
@@ -5575,7 +5575,7 @@ static class Program
         items.Reverse();
 
         ShowListSelect(
-            "ヒストリ",
+            "History",
             items,
             async selected =>
             {
@@ -5589,12 +5589,12 @@ static class Program
         string currentDir = pane.Columns[pane.ActiveColumn].Path;
         if (currentDir == "::DRIVES::")
         {
-            _lastErrorMessage = "ドライブ一覧はブックマークできません";
+            _lastErrorMessage = "Cannot bookmark the drive list";
             return;
         }
 
         bool added = Bookmarks.Add(currentDir);
-        _lastErrorMessage = added ? $"ブックマークに追加: {currentDir}" : $"既に登録済み: {currentDir}";
+        _lastErrorMessage = added ? $"Bookmarked: {currentDir}" : $"Already bookmarked: {currentDir}";
     }
 
     static void RequestBookmarkJump(Pane pane)
@@ -5602,12 +5602,12 @@ static class Program
         var items = Bookmarks.Load();
         if (items.Count == 0)
         {
-            _lastErrorMessage = "ブックマークはまだありません";
+            _lastErrorMessage = "No bookmarks yet";
             return;
         }
 
         ShowListSelect(
-            "ブックマーク",
+            "Bookmarks",
             items,
             async selected =>
             {
@@ -5880,7 +5880,7 @@ static class Program
 
             int markedCount = pane.Columns[pane.ActiveColumn].Marked.Count;
             if (markedCount > 0)
-                status += $" | {markedCount}件マーク中";
+                status += $" | {markedCount} marked";
 
             status = CharacterWidth.SmartTruncate(status, width);
             frame[height - 1] = CharacterWidth.PadToWidth(status, width);
@@ -5917,7 +5917,7 @@ static class Program
             }
 
             int percent = totalCount > 0 ? (int)(100.0 * doneCount / totalCount) : 0;
-            string text = $"▶{active.Count}件実行中 #{oldest.ShortId} {oldest.OpName} {percent}% ({doneCount}/{totalCount}) {currentFile}";
+            string text = $"▶{active.Count} running #{oldest.ShortId} {oldest.OpName} {percent}% ({doneCount}/{totalCount}) {currentFile}";
             text = CharacterWidth.SmartTruncate(text, width);
             _cachedJobSummary = CharacterWidth.PadToWidth(text, width);
             _lastJobSummaryRenderTime = DateTime.UtcNow;
@@ -6344,7 +6344,7 @@ static class Program
                 {
                     confirm.Message,
                     "",
-                    "[Y]es  [N]o  [Esc]キャンセル",
+                    "[Y]es  [N]o  [Esc]Cancel",
                 };
 
             case TextInputDialogState textInput:
@@ -6358,7 +6358,7 @@ static class Program
                 {
                     displayLine,
                     "",
-                    "[Enter]確定  [Esc]キャンセル",
+                    "[Enter]Confirm  [Esc]Cancel",
                 };
             }
 
@@ -6372,7 +6372,7 @@ static class Program
 
                 if (listSelect.FilteredItems.Count == 0)
                 {
-                    lines.Add("(該当なし)");
+                    lines.Add("(No matches)");
                 }
                 else
                 {
@@ -6398,7 +6398,7 @@ static class Program
                 }
 
                 lines.Add("");
-                lines.Add("[↑↓]選択  [Enter]確定  [Esc]キャンセル");
+                lines.Add("[↑↓]Select  [Enter]Confirm  [Esc]Cancel");
                 return lines;
             }
 
@@ -6409,7 +6409,7 @@ static class Program
 
                 if (jobListDlg.Snapshot.Count == 0)
                 {
-                    lines.Add("(ジョブなし)");
+                    lines.Add("(No jobs)");
                 }
                 else
                 {
@@ -6434,7 +6434,7 @@ static class Program
                 }
 
                 lines.Add("");
-                lines.Add("[↑↓]選択  [Enter/Delete]キャンセル  [Esc]閉じる");
+                lines.Add("[↑↓]Select  [Enter/Delete]Cancel  [Esc]Close");
                 return lines;
             }
 
