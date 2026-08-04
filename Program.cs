@@ -1049,6 +1049,7 @@ sealed class Pane
     public LeapState Leap = new();
     public PreviewPane Preview = new();
     public bool NeedsRefresh; // ジョブ完了時の遅延再読込用 dirty フラグ(Phase 7 で使用)
+    public bool NavRebuildPending; // cursor moved but right-side rebuild deferred to idle tick (Phase 9)
 }
 
 sealed class ScreenState
@@ -2755,7 +2756,7 @@ static class Program
 
     internal static readonly ScreenState State = new ScreenState();
     static Pane FocusedPane => State.Panes[State.FocusedPane];
-    static DateTime _lastNavigationTime = DateTime.MinValue;
+    internal static DateTime _lastNavigationTime = DateTime.MinValue;
     static string? _lastErrorMessage = null;
     static DateTime _lastJobSummaryRenderTime = DateTime.MinValue;
     static string? _cachedJobSummary = null;
@@ -2872,6 +2873,7 @@ static class Program
 
                     if (State.Dialog == null)
                     {
+                        await ProcessPendingNavigationAsync(FocusedPane);
                         foreach (Pane p in State.Panes)
                             await ExtendRightSideIfReadyAsync(p);
                     }
@@ -3110,11 +3112,11 @@ static class Program
         switch (key.Key)
         {
             case ConsoleKey.UpArrow:
-                await MoveUpAsync(pane);
+                MoveUp(pane);
                 break;
 
             case ConsoleKey.DownArrow:
-                await MoveDownAsync(pane);
+                MoveDown(pane);
                 break;
 
             case ConsoleKey.LeftArrow:
@@ -3227,28 +3229,28 @@ static class Program
             case ConsoleKey.PageUp:
                 NavigationHelper.PageUp(pane.Columns[pane.ActiveColumn], Console.WindowHeight - 3);
                 UpdateHorizontalScroll(pane);
-                await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                MarkNavDirty(pane);
                 if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 break;
 
             case ConsoleKey.PageDown:
                 NavigationHelper.PageDown(pane.Columns[pane.ActiveColumn], Console.WindowHeight - 3);
                 UpdateHorizontalScroll(pane);
-                await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                MarkNavDirty(pane);
                 if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 break;
 
             case ConsoleKey.Home:
                 NavigationHelper.GoHome(pane.Columns[pane.ActiveColumn]);
                 UpdateHorizontalScroll(pane);
-                await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                MarkNavDirty(pane);
                 if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 break;
 
             case ConsoleKey.End:
                 NavigationHelper.GoEnd(pane.Columns[pane.ActiveColumn]);
                 UpdateHorizontalScroll(pane);
-                await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                MarkNavDirty(pane);
                 if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 break;
 
@@ -3258,7 +3260,7 @@ static class Program
                     // g → top (must have NO modifiers)
                     NavigationHelper.GoHome(pane.Columns[pane.ActiveColumn]);
                     UpdateHorizontalScroll(pane);
-                    await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                    MarkNavDirty(pane);
                     if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 }
                 else if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
@@ -3266,7 +3268,7 @@ static class Program
                     // G → bottom
                     NavigationHelper.GoEnd(pane.Columns[pane.ActiveColumn]);
                     UpdateHorizontalScroll(pane);
-                    await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                    MarkNavDirty(pane);
                     if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 }
                 break;
@@ -3276,7 +3278,7 @@ static class Program
                 {
                     NavigationHelper.PageUp(pane.Columns[pane.ActiveColumn], Console.WindowHeight - 3);
                     UpdateHorizontalScroll(pane);
-                    await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                    MarkNavDirty(pane);
                     if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 }
                 else if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
@@ -3294,7 +3296,7 @@ static class Program
                 {
                     NavigationHelper.PageDown(pane.Columns[pane.ActiveColumn], Console.WindowHeight - 3);
                     UpdateHorizontalScroll(pane);
-                    await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                    MarkNavDirty(pane);
                     if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 }
                 break;
@@ -3836,7 +3838,7 @@ static class Program
         }
     }
 
-    static async Task MoveUpAsync(Pane pane)
+    internal static void MoveUp(Pane pane)
     {
         Column c = pane.Columns[pane.ActiveColumn];
         int visibleHeight = SafeWindowHeight() - 2;
@@ -3850,23 +3852,12 @@ static class Program
                 c.ScrollOffset = c.Selected;
 
             UpdateHorizontalScroll(pane);
-
-            // Reset debounce timer on every cursor move, rebuild if cursor stable for 300ms
-            if (IsNavigationDebounced())
-            {
-                await RebuildRightSideAsync(pane, pane.ActiveColumn);
-            }
-            else
-            {
-                CancelRightSideReads(pane, pane.ActiveColumn);
-                // Validate right pane matches current cursor; rebuild immediately if stale
-                await ValidateAndRebuildRightPaneIfNeeded(pane, pane.ActiveColumn);
-            }
+            MarkNavDirty(pane);
             if (pane.Preview.IsVisible) StartPreviewLoad(pane);
         }
     }
 
-    static async Task MoveDownAsync(Pane pane)
+    internal static void MoveDown(Pane pane)
     {
         Column c = pane.Columns[pane.ActiveColumn];
         int visibleHeight = SafeWindowHeight() - 2;
@@ -3880,30 +3871,46 @@ static class Program
                 c.ScrollOffset = c.Selected - visibleHeight + 1;
 
             UpdateHorizontalScroll(pane);
-
-            // Reset debounce timer on every cursor move, rebuild if cursor stable for 300ms
-            if (IsNavigationDebounced())
-            {
-                await RebuildRightSideAsync(pane, pane.ActiveColumn);
-            }
-            else
-            {
-                CancelRightSideReads(pane, pane.ActiveColumn);
-                // Validate right pane matches current cursor; rebuild immediately if stale
-                await ValidateAndRebuildRightPaneIfNeeded(pane, pane.ActiveColumn);
-            }
+            MarkNavDirty(pane);
             if (pane.Preview.IsVisible) StartPreviewLoad(pane);
         }
     }
 
-    static bool IsNavigationDebounced()
+    // Called on every cursor move. Never touches the disk: cancels in-flight right-side
+    // reads, prunes right columns that no longer match the selection, and defers the
+    // rebuild to ProcessPendingNavigationAsync (idle tick, after the cursor is stable).
+    internal static void MarkNavDirty(Pane pane)
     {
-        DateTime now = DateTime.UtcNow;
-        // Check if 300ms has passed since cursor LAST MOVED (not last rebuild)
-        // Always update timer on cursor move to implement "reset on move" behavior
-        bool shouldRebuild = (now - _lastNavigationTime).TotalMilliseconds >= NavigationDebounceMs;
-        _lastNavigationTime = now;  // Reset timer on every cursor move
-        return shouldRebuild;
+        CancelRightSideReads(pane, pane.ActiveColumn);
+        PruneStaleRightColumns(pane, pane.ActiveColumn);
+        pane.NavRebuildPending = true;
+        _lastNavigationTime = DateTime.UtcNow;
+    }
+
+    static void PruneStaleRightColumns(Pane pane, int columnIndex)
+    {
+        string? currentSelection = GetSelectedDirectory(pane, columnIndex);
+        Column? right = pane.Columns.Count > columnIndex + 1 ? pane.Columns[columnIndex + 1] : null;
+        // Keep a matching right column visible (avoids flicker, cf. commit f11252c);
+        // prune when the cursor is on a file or the right column shows a different dir.
+        if (right != null && currentSelection == right.Path) return;
+        while (pane.Columns.Count > columnIndex + 1)
+        {
+            Column col = pane.Columns[pane.Columns.Count - 1];
+            col.ReadCts?.Cancel();
+            SaveCursorMemory(col);
+            pane.Columns.RemoveAt(pane.Columns.Count - 1);
+        }
+    }
+
+    internal static async Task ProcessPendingNavigationAsync(Pane pane)
+    {
+        if (!pane.NavRebuildPending) return;
+        if ((DateTime.UtcNow - _lastNavigationTime).TotalMilliseconds < NavigationDebounceMs) return;
+        pane.NavRebuildPending = false;
+        await RebuildRightSideAsync(pane, pane.ActiveColumn);
+        if (pane.Preview.IsVisible) StartPreviewLoad(pane);
+        _redrawGate.Request();
     }
 
     static void CancelRightSideReads(Pane pane, int columnIndex)
@@ -3913,41 +3920,6 @@ static class Program
         for (int i = columnIndex + 1; i < pane.Columns.Count; i++)
         {
             pane.Columns[i].ReadCts?.Cancel();
-        }
-    }
-
-    static async Task ValidateAndRebuildRightPaneIfNeeded(Pane pane, int columnIndex)
-    {
-        // Check if right pane matches current cursor selection
-        // Rebuild if: cursor on directory but no right pane, or right pane is stale
-        string? currentSelection = GetSelectedDirectory(pane, columnIndex);
-
-        if (currentSelection == null)
-        {
-            // Cursor on file — prune any stale right columns left over from previous selection
-            while (pane.Columns.Count > columnIndex + 1)
-            {
-                Column col = pane.Columns[pane.Columns.Count - 1];
-                col.ReadCts?.Cancel();
-                SaveCursorMemory(col);
-                pane.Columns.RemoveAt(pane.Columns.Count - 1);
-            }
-            return;
-        }
-
-        if (pane.Columns.Count <= columnIndex + 1)
-        {
-            // No right pane yet, but cursor points to directory → create it
-            await RebuildRightSideAsync(pane, columnIndex);
-            return;
-        }
-
-        Column rightPane = pane.Columns[columnIndex + 1];
-
-        // If right pane's path doesn't match what cursor points to, rebuild immediately
-        if (currentSelection != rightPane.Path)
-        {
-            await RebuildRightSideAsync(pane, columnIndex);
         }
     }
 
@@ -4807,7 +4779,7 @@ static class Program
         int cur = vis.IndexOf(pane.Columns[pane.ActiveColumn].Selected);
         int next = Math.Min(cur + 1, vis.Count - 1);
         pane.Columns[pane.ActiveColumn].Selected = vis[next];
-        await RebuildRightSideOrValidateAsync(pane);
+        MarkNavDirty(pane);
     }
 
     static async Task MoveLeapCursorUpAsync(Pane pane)
@@ -4818,22 +4790,7 @@ static class Program
         if (cur < 0) cur = vis.Count;
         int prev = Math.Max(cur - 1, 0);
         pane.Columns[pane.ActiveColumn].Selected = vis[prev];
-        await RebuildRightSideOrValidateAsync(pane);
-    }
-
-    // Same debounce policy as MoveUpAsync/MoveDownAsync: full rebuild once the cursor
-    // is stable, cheap validate-and-prune while keys are still repeating.
-    static async Task RebuildRightSideOrValidateAsync(Pane pane)
-    {
-        if (IsNavigationDebounced())
-        {
-            await RebuildRightSideAsync(pane, pane.ActiveColumn);
-        }
-        else
-        {
-            CancelRightSideReads(pane, pane.ActiveColumn);
-            await ValidateAndRebuildRightPaneIfNeeded(pane, pane.ActiveColumn);
-        }
+        MarkNavDirty(pane);
     }
 
     static void ApplyLeapFilter(Pane pane)
@@ -5421,6 +5378,7 @@ static class Program
 
     internal static async Task ExtendRightSideIfReadyAsync(Pane pane)
     {
+        if (pane.NavRebuildPending) return;
         if (pane.Columns.Count == 0) return;
         Column last = pane.Columns[pane.Columns.Count - 1];
         if (last.IsLoading) return;

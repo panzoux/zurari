@@ -107,4 +107,57 @@ public class AsyncColumnLoadTests
         }
         finally { Directory.Delete(root, true); }
     }
+
+    [Fact]
+    public async Task MoveDown_DuringRepeat_StartsNoReadAndFlagsPending()
+    {
+        string root = MakeTempDir();
+        Directory.CreateDirectory(Path.Combine(root, "d1"));
+        Directory.CreateDirectory(Path.Combine(root, "d2"));
+        try
+        {
+            Pane pane = await MakePaneAtAsync(root);
+            pane.Columns[0].Selected = 0;                        // on "d1/"
+            Program._lastNavigationTime = DateTime.UtcNow;       // simulate mid-repeat
+
+            Program.MoveDown(pane);                              // now synchronous
+
+            Assert.Equal(1, pane.Columns[0].Selected);           // cursor moved ("d2/")
+            Assert.True(pane.NavRebuildPending);
+            Assert.Single(pane.Columns);                         // no read started
+
+            // Debounce not elapsed → idle processing does nothing
+            await Program.ProcessPendingNavigationAsync(pane);
+            Assert.True(pane.NavRebuildPending);
+            Assert.Single(pane.Columns);
+
+            // Cursor stable past debounce → idle processing rebuilds
+            Program._lastNavigationTime = DateTime.UtcNow.AddMilliseconds(-400);
+            await Program.ProcessPendingNavigationAsync(pane);
+            Assert.False(pane.NavRebuildPending);
+            Assert.Equal(2, pane.Columns.Count);
+            Assert.EndsWith("d2", pane.Columns[1].Path);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task MoveDown_OntoFile_PrunesStaleRightColumns()
+    {
+        string root = MakeTempDir("zzz.txt");                    // sorts after directories
+        Directory.CreateDirectory(Path.Combine(root, "d1"));
+        try
+        {
+            Pane pane = await MakePaneAtAsync(root);
+            pane.Columns[0].Selected = 0;                        // "d1/"
+            await Program.RebuildRightSideAsync(pane, 0);
+            await pane.Columns[1].LoadingTask!;
+            Assert.Equal(2, pane.Columns.Count);
+
+            Program.MoveDown(pane);                              // onto "zzz.txt"
+
+            Assert.Single(pane.Columns);                         // stale right column pruned synchronously
+        }
+        finally { Directory.Delete(root, true); }
+    }
 }
