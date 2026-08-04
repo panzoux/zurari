@@ -4772,25 +4772,27 @@ static class Program
         ApplyLeapFilter(pane);
     }
 
-    static async Task MoveLeapCursorDownAsync(Pane pane)
+    static Task MoveLeapCursorDownAsync(Pane pane)
     {
         List<int> vis = pane.Leap.VisibleIndices;
-        if (vis.Count == 0) return;
+        if (vis.Count == 0) return Task.CompletedTask;
         int cur = vis.IndexOf(pane.Columns[pane.ActiveColumn].Selected);
         int next = Math.Min(cur + 1, vis.Count - 1);
         pane.Columns[pane.ActiveColumn].Selected = vis[next];
         MarkNavDirty(pane);
+        return Task.CompletedTask;
     }
 
-    static async Task MoveLeapCursorUpAsync(Pane pane)
+    static Task MoveLeapCursorUpAsync(Pane pane)
     {
         List<int> vis = pane.Leap.VisibleIndices;
-        if (vis.Count == 0) return;
+        if (vis.Count == 0) return Task.CompletedTask;
         int cur = vis.IndexOf(pane.Columns[pane.ActiveColumn].Selected);
         if (cur < 0) cur = vis.Count;
         int prev = Math.Max(cur - 1, 0);
         pane.Columns[pane.ActiveColumn].Selected = vis[prev];
         MarkNavDirty(pane);
+        return Task.CompletedTask;
     }
 
     static void ApplyLeapFilter(Pane pane)
