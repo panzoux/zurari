@@ -3516,7 +3516,7 @@ static class Program
                 continue;
 
             SaveCursorMemory(current);
-            Column refreshed = await CreateColumnAsync(current.Path, CancellationToken.None);
+            Column refreshed = await CreateColumnAsync(current.Path);
             if (refreshed.LoadingTask != null)
                 await refreshed.LoadingTask;
 
@@ -3600,7 +3600,7 @@ static class Program
         return column;
     }
 
-    internal static Task<Column> CreateColumnAsync(string path, CancellationToken ct)
+    internal static Task<Column> CreateColumnAsync(string path)
     {
         Column column = new Column(path);
 
@@ -3636,6 +3636,7 @@ static class Program
         column.EntriesRead = 0;
         column.DirectoriesCount = 0;
         column.ReadCts = new CancellationTokenSource();
+        CancellationToken ct = column.ReadCts.Token;
         ApplyCursorMemory(column);
 
         column.LoadingTask = Task.Run(async () =>
@@ -3754,7 +3755,7 @@ static class Program
                         {
                             // Permission denied or other errors
                         }
-                    }, ct);
+                    });
                 }
             }
             catch (OperationCanceledException)
@@ -3772,7 +3773,7 @@ static class Program
                 SeekRestoreTo(column);
                 _redrawGate.Request();
             }
-        }, ct);
+        });
 
         column.CachedTime = DateTime.UtcNow;
         return Task.FromResult(column);
@@ -4224,7 +4225,7 @@ static class Program
             // RefreshCurrentAsync replaces pane.Columns[pane.ActiveColumn] with a brand-new
             // Column instance, so setting col.RestoreTo on the pre-rename Column would not
             // propagate. Build the refreshed column directly and set RestoreTo on it instead.
-            Column refreshed = await CreateColumnAsync(col.Path, CancellationToken.None);
+            Column refreshed = await CreateColumnAsync(col.Path);
             if (refreshed.LoadingTask != null) await refreshed.LoadingTask;
             refreshed.RestoreTo = isDir ? newName + "/" : newName;
             SeekRestoreTo(refreshed);
@@ -4461,7 +4462,7 @@ static class Program
 
         SaveCursorMemory(current);
 
-        Column refreshed = await CreateColumnAsync(currentPath, CancellationToken.None);
+        Column refreshed = await CreateColumnAsync(currentPath);
         if (refreshed.LoadingTask != null)
             await refreshed.LoadingTask;
 
@@ -5400,7 +5401,7 @@ static class Program
 
         while (nextPath != null)
         {
-            Column next = await CreateColumnAsync(nextPath, CancellationToken.None);
+            Column next = await CreateColumnAsync(nextPath);
             if (next.LoadingTask != null)
                 await next.LoadingTask;
             pane.Columns.Add(next);
@@ -5501,7 +5502,7 @@ static class Program
         pane.Columns.Clear();
 
         string rootMarker = GetRootPath();
-        Column rootColumn = await CreateColumnAsync(rootMarker, CancellationToken.None);
+        Column rootColumn = await CreateColumnAsync(rootMarker);
         if (rootColumn.LoadingTask != null) await rootColumn.LoadingTask;
         pane.Columns.Add(rootColumn);
 
@@ -5539,7 +5540,7 @@ static class Program
             current.Selected = idx;
 
             accumulatedPath = Path.Combine(accumulatedPath, segment);
-            Column next = await CreateColumnAsync(accumulatedPath, CancellationToken.None);
+            Column next = await CreateColumnAsync(accumulatedPath);
             if (next.LoadingTask != null) await next.LoadingTask;
 
             while (pane.Columns.Count > pane.ActiveColumn + 1)
