@@ -2869,6 +2869,12 @@ static class Program
                         _lastJobPollTime = DateTime.UtcNow;
                         _redrawGate.Request();
                     }
+
+                    if (State.Dialog == null)
+                    {
+                        foreach (Pane p in State.Panes)
+                            await ExtendRightSideIfReadyAsync(p);
+                    }
                     System.Threading.Thread.Sleep(50);
                     continue;
                 }
@@ -5387,7 +5393,7 @@ static class Program
         return Path.Combine(c.Path, name.TrimEnd('/'));
     }
 
-    static async Task RebuildRightSideAsync(Pane pane, int columnIndex)
+    internal static async Task RebuildRightSideAsync(Pane pane, int columnIndex)
     {
         while (pane.Columns.Count > columnIndex + 1)
         {
@@ -5402,15 +5408,25 @@ static class Program
         while (nextPath != null)
         {
             Column next = await CreateColumnAsync(nextPath);
-            if (next.LoadingTask != null)
-                await next.LoadingTask;
             pane.Columns.Add(next);
-
+            // Entries aren't loaded yet, so the chain can't walk deeper here;
+            // ExtendRightSideIfReadyAsync continues it on idle ticks once the load lands.
+            if (next.IsLoading) break;
             nextPath = GetSelectedDirectory(pane, pane.Columns.Count - 1);
         }
 
         // Recalculate scroll now that the right-side column count is final.
         UpdateHorizontalScroll(pane);
+    }
+
+    internal static async Task ExtendRightSideIfReadyAsync(Pane pane)
+    {
+        if (pane.Columns.Count == 0) return;
+        Column last = pane.Columns[pane.Columns.Count - 1];
+        if (last.IsLoading) return;
+        if (GetSelectedDirectory(pane, pane.Columns.Count - 1) == null) return;
+        await RebuildRightSideAsync(pane, pane.Columns.Count - 1);
+        _redrawGate.Request();
     }
 
     static async Task ToggleSplitAsync()
