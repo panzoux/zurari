@@ -2952,6 +2952,10 @@ static class Program
             System.Runtime.InteropServices.OSPlatform.Windows);
     }
 
+    // Console.WindowWidth/Height throw IOException when no console is attached (tests, redirected IO).
+    internal static int SafeWindowWidth()  { try { return Console.WindowWidth; }  catch { return 120; } }
+    internal static int SafeWindowHeight() { try { return Console.WindowHeight; } catch { return 30; } }
+
     static bool SelectedItemIsFileOrDrive(Pane pane)
     {
         if (pane.ActiveColumn < 0 || pane.ActiveColumn >= pane.Columns.Count) return false;
@@ -3596,7 +3600,7 @@ static class Program
         return column;
     }
 
-    static Task<Column> CreateColumnAsync(string path, CancellationToken ct)
+    internal static Task<Column> CreateColumnAsync(string path, CancellationToken ct)
     {
         Column column = new Column(path);
 
@@ -3638,7 +3642,7 @@ static class Program
         {
             try
             {
-                int visibleHeight = Console.WindowHeight - 3;
+                int visibleHeight = SafeWindowHeight() - 3;
                 int bufferSize = Math.Max(100, visibleHeight + 20);
 
                 List<string> dirs = new List<string>();
@@ -3828,7 +3832,7 @@ static class Program
     static async Task MoveUpAsync(Pane pane)
     {
         Column c = pane.Columns[pane.ActiveColumn];
-        int visibleHeight = Console.WindowHeight - 2;
+        int visibleHeight = SafeWindowHeight() - 2;
 
         if (c.Selected > 0)
         {
@@ -3858,7 +3862,7 @@ static class Program
     static async Task MoveDownAsync(Pane pane)
     {
         Column c = pane.Columns[pane.ActiveColumn];
-        int visibleHeight = Console.WindowHeight - 2;
+        int visibleHeight = SafeWindowHeight() - 2;
 
         if (c.Selected + 1 < c.Entries.Count)
         {
@@ -3984,7 +3988,7 @@ static class Program
     static void UpdateHorizontalScroll(Pane pane)
     {
         bool previewTakesSlot = pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane);
-        int visibleColumns = Math.Max(1, Console.WindowWidth / ColumnWidth - (previewTakesSlot ? 1 : 0));
+        int visibleColumns = Math.Max(1, SafeWindowWidth() / ColumnWidth - (previewTakesSlot ? 1 : 0));
 
         // Only reserve a right-column slot when on a directory — files never expand rightward,
         // and the old dir column may still be in Columns during async rebuild.
