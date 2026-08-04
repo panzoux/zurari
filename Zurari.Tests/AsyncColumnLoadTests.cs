@@ -27,6 +27,19 @@ public class AsyncColumnLoadTests
     }
 
     [Fact]
+    public async Task CreateColumnAsync_InvalidPath_ShowsPlaceholderViaLoader()
+    {
+        string bogus = Path.Combine(Path.GetTempPath(), "zrr_missing_" + Guid.NewGuid().ToString("N"));
+        Column col = await Program.CreateColumnAsync(bogus);
+        // Stat check now runs inside the loader; the caller gets a loading column immediately.
+        Assert.NotNull(col.LoadingTask);
+        await col.LoadingTask!;
+        Assert.False(col.IsLoading);
+        Assert.Single(col.Entries);
+        Assert.Equal("<No file>", col.Entries[0]);
+    }
+
+    [Fact]
     public async Task CancelReadCts_StopsLoadBeforeCompletion()
     {
         // 2000 files: loader needs several ms (enumerate+sort two phases); Cancel() below

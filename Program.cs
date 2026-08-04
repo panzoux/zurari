@@ -2807,7 +2807,7 @@ static class Program
             string root = GetRootPath();
             State.Panes.Add(new Pane());
             State.FocusedPane = 0;
-            FocusedPane.Columns.Add(CreateColumn(root));
+            FocusedPane.Columns.Add(await CreateColumnAsync(root));
             await RebuildRightSideAsync(FocusedPane, 0);
 
             while (true)
@@ -3562,63 +3562,6 @@ static class Program
             await RefreshAffectedColumnsAsync(job);
     }
 
-    static Column CreateColumn(string path)
-    {
-        Column column = new Column(path);
-
-        // Special case: drive list for Windows
-        if (path == "::DRIVES::")
-        {
-            try
-            {
-                DriveInfo[] drives = DriveInfo.GetDrives();
-                for (int i = 0; i < drives.Length; i++)
-                {
-                    if (drives[i].IsReady)
-                    {
-                        column.Entries.Add(drives[i].Name.TrimEnd('\\') + "/");
-                    }
-                }
-            }
-            catch
-            {
-            }
-            return column;
-        }
-
-        if (!IsValidPath(path))
-            return column;
-
-        try
-        {
-            // Directories first
-            string[] dirs = Directory.GetDirectories(path);
-            Array.Sort(dirs, StringComparer.OrdinalIgnoreCase);
-
-            for (int i = 0; i < dirs.Length; i++)
-            {
-                string name = Path.GetFileName(dirs[i]);
-                column.Entries.Add(name + "/");
-            }
-
-            // Then files
-            string[] files = Directory.GetFiles(path);
-            Array.Sort(files, StringComparer.OrdinalIgnoreCase);
-
-            for (int i = 0; i < files.Length; i++)
-            {
-                column.Entries.Add(Path.GetFileName(files[i]));
-            }
-        }
-        catch
-        {
-            // Permission denied, etc.
-        }
-
-        column.CachedTime = DateTime.UtcNow;
-        return column;
-    }
-
     internal static Task<Column> CreateColumnAsync(string path)
     {
         Column column = new Column(path);
@@ -3645,12 +3588,6 @@ static class Program
             return Task.FromResult(column);
         }
 
-        if (!IsValidPath(path))
-        {
-            column.IsLoading = false;
-            return Task.FromResult(column);
-        }
-
         column.IsLoading = true;
         column.EntriesRead = 0;
         column.DirectoriesCount = 0;
@@ -3662,6 +3599,8 @@ static class Program
         {
             try
             {
+                if (!IsValidPath(path)) return;
+
                 int visibleHeight = SafeWindowHeight() - 3;
                 int bufferSize = Math.Max(100, visibleHeight + 20);
 
@@ -5414,7 +5353,7 @@ static class Program
             string initialPath = source.Columns[source.ActiveColumn].Path;
 
             Pane newPane = new Pane();
-            newPane.Columns.Add(CreateColumn(initialPath));
+            newPane.Columns.Add(await CreateColumnAsync(initialPath));
             await RebuildRightSideAsync(newPane, 0);
 
             State.Panes.Add(newPane);
