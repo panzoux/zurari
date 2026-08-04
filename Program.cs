@@ -1024,6 +1024,7 @@ sealed class Column
     public int DirectoriesCount { get; set; }
     public CancellationTokenSource? ReadCts { get; set; }
     public Task? LoadingTask { get; set; }
+    public bool NeedsMarkReconcile;
 
     public Column(string path)
     {
@@ -2873,9 +2874,12 @@ static class Program
 
                     if (State.Dialog == null)
                     {
-                        await ProcessPendingNavigationAsync(FocusedPane);
                         foreach (Pane p in State.Panes)
+                        {
+                            await ProcessPendingNavigationAsync(p);
                             await ExtendRightSideIfReadyAsync(p);
+                            ProcessPendingMarkReconciles(p);
+                        }
                     }
                     System.Threading.Thread.Sleep(50);
                     continue;
@@ -3528,14 +3532,9 @@ static class Program
             refreshed.Marked = current.Marked;
             if (refreshed.LoadingTask != null)
             {
-                // Reconcile marks only once entries are known. Runs on a pool thread like the
-                // loader itself; draw already tolerates concurrent Entries mutation, and Marked
-                // reconciliation is the same class of benign race.
-                _ = refreshed.LoadingTask.ContinueWith(_ =>
-                {
-                    MarkHelper.ReconcileAfterReload(refreshed);
-                    _redrawGate.Request();
-                }, TaskContinuationOptions.OnlyOnRanToCompletion);
+                // Reconcile only once entries are loaded — and on the sequential main-loop
+                // thread (idle tick), never in parallel with Spacebar mark toggling.
+                refreshed.NeedsMarkReconcile = true;
             }
             else
             {
@@ -3850,6 +3849,21 @@ static class Program
             col.ReadCts?.Cancel();
             SaveCursorMemory(col);
             pane.Columns.RemoveAt(pane.Columns.Count - 1);
+        }
+    }
+
+    // Runs on the idle tick (sequential with all mark mutation): finishes the deferred
+    // mark reconciliation for columns whose reload has completed.
+    internal static void ProcessPendingMarkReconciles(Pane pane)
+    {
+        foreach (Column col in pane.Columns)
+        {
+            if (col.NeedsMarkReconcile && !col.IsLoading)
+            {
+                col.NeedsMarkReconcile = false;
+                MarkHelper.ReconcileAfterReload(col);
+                _redrawGate.Request();
+            }
         }
     }
 

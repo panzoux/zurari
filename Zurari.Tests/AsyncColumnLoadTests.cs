@@ -188,11 +188,33 @@ public class AsyncColumnLoadTests
 
             Column refreshed = pane.Columns[0];
             if (refreshed.LoadingTask != null) await refreshed.LoadingTask;
-            // Mark reconciliation runs as a continuation of the load: poll briefly.
-            for (int i = 0; i < 100 && refreshed.Marked.Contains("ghost.txt"); i++)
-                await Task.Delay(10);
+            Program.ProcessPendingMarkReconciles(pane);
             Assert.Contains("a.txt", refreshed.Marked);
             Assert.DoesNotContain("ghost.txt", refreshed.Marked);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task ProcessPendingNavigation_WorksForNonFocusedPane()
+    {
+        string root = MakeTempDir();
+        Directory.CreateDirectory(Path.Combine(root, "d1"));
+        Directory.CreateDirectory(Path.Combine(root, "d2"));
+        try
+        {
+            Pane pane = await MakePaneAtAsync(root);
+            pane.Columns[0].Selected = 0;
+            Program.MoveDown(pane);                      // prunes + sets NavRebuildPending
+            Assert.True(pane.NavRebuildPending);
+
+            // Simulate: this pane lost focus; idle processing must still handle it.
+            Program._lastNavigationTime = DateTime.UtcNow.AddMilliseconds(-400);
+            await Program.ProcessPendingNavigationAsync(pane);
+
+            Assert.False(pane.NavRebuildPending);
+            Assert.Equal(2, pane.Columns.Count);
+            Assert.EndsWith("d2", pane.Columns[1].Path);
         }
         finally { Directory.Delete(root, true); }
     }
