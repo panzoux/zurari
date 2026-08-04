@@ -5689,7 +5689,7 @@ static class Program
         State.PrevFrame = currentFrame;
     }
 
-    static string[] BuildFrame(int width, int height)
+    internal static string[] BuildFrame(int width, int height)
     {
         _framesBuilt++;
         Pane pane = FocusedPane;
@@ -5761,7 +5761,7 @@ static class Program
         }
 
         // Override status with preview-hidden hint only when terminal width is the limiting factor
-        if (pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane) && Console.WindowWidth < ColumnWidth * 2)
+        if (pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane) && width < ColumnWidth * 2)
         {
             _lastErrorMessage = "[preview hidden: narrow terminal]";
         }
@@ -5866,7 +5866,7 @@ static class Program
 
     internal static void DrawPaneToLines(Line[] lines, Pane pane, int yOffset, int height, bool focused, bool showOwnPathLine, int width)
     {
-        bool showPreview = pane.Preview.IsVisible && Console.WindowWidth >= ColumnWidth * 2;
+        bool showPreview = pane.Preview.IsVisible && width >= ColumnWidth * 2;
         bool filePreview = pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane);
 
         int displayX = 0;
