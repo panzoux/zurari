@@ -820,6 +820,15 @@ Automated tests can't reproduce cloud-drive latency. Verify by hand before closi
 
 Every task: spec-compliance review + quality review passed; `dotnet build` 0 warnings / 0 errors at each commit.
 
+Final whole-branch review found and fixed two Important issues (both new-in-phase, both verified fixed on re-review):
+
+| Fix | Commit | Issue |
+|---|---|---|
+| Mark reconcile race | `b57d691` | `ContinueWith` reconciling `Column.Marked` on a pool thread raced Spacebar toggles on the same `HashSet`; replaced with `NeedsMarkReconcile` flag processed on the idle tick (sequential with all mark mutation). Idle tick also now processes pending nav rebuilds for ALL panes, not just focused. |
+| Per-pane debounce | `0758b8a` | Shared static `_lastNavigationTime` let one pane's activity defer the other pane's pending rebuild once idle processing went all-panes; moved to `Pane.LastNavigationTime`. |
+
+Final state: 175/175 tests, 0 build warnings. 14 new tests total across `AsyncColumnLoadTests.cs` + `PreviewSplitPaneTests.cs`.
+
 ## Unresolved issues
 
 (Execution sessions: record anything the plan didn't anticipate here and stop rather than improvise, per the project's execution regime.)
