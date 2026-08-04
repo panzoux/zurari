@@ -1051,6 +1051,7 @@ sealed class Pane
     public PreviewPane Preview = new();
     public bool NeedsRefresh; // ジョブ完了時の遅延再読込用 dirty フラグ(Phase 7 で使用)
     public bool NavRebuildPending; // cursor moved but right-side rebuild deferred to idle tick (Phase 9)
+    public DateTime LastNavigationTime = DateTime.MinValue;
 }
 
 sealed class ScreenState
@@ -2757,7 +2758,6 @@ static class Program
 
     internal static readonly ScreenState State = new ScreenState();
     static Pane FocusedPane => State.Panes[State.FocusedPane];
-    internal static DateTime _lastNavigationTime = DateTime.MinValue;
     static string? _lastErrorMessage = null;
     static DateTime _lastJobSummaryRenderTime = DateTime.MinValue;
     static string? _cachedJobSummary = null;
@@ -3833,7 +3833,7 @@ static class Program
         CancelRightSideReads(pane, pane.ActiveColumn);
         PruneStaleRightColumns(pane, pane.ActiveColumn);
         pane.NavRebuildPending = true;
-        _lastNavigationTime = DateTime.UtcNow;
+        pane.LastNavigationTime = DateTime.UtcNow;
     }
 
     static void PruneStaleRightColumns(Pane pane, int columnIndex)
@@ -3870,7 +3870,7 @@ static class Program
     internal static async Task ProcessPendingNavigationAsync(Pane pane)
     {
         if (!pane.NavRebuildPending) return;
-        if ((DateTime.UtcNow - _lastNavigationTime).TotalMilliseconds < NavigationDebounceMs) return;
+        if ((DateTime.UtcNow - pane.LastNavigationTime).TotalMilliseconds < NavigationDebounceMs) return;
         pane.NavRebuildPending = false;
         await RebuildRightSideAsync(pane, pane.ActiveColumn);
         if (pane.Preview.IsVisible) StartPreviewLoad(pane);

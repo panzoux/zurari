@@ -131,7 +131,7 @@ public class AsyncColumnLoadTests
         {
             Pane pane = await MakePaneAtAsync(root);
             pane.Columns[0].Selected = 0;                        // on "d1/"
-            Program._lastNavigationTime = DateTime.UtcNow;       // simulate mid-repeat
+            pane.LastNavigationTime = DateTime.UtcNow;           // simulate mid-repeat
 
             Program.MoveDown(pane);                              // now synchronous
 
@@ -145,7 +145,7 @@ public class AsyncColumnLoadTests
             Assert.Single(pane.Columns);
 
             // Cursor stable past debounce → idle processing rebuilds
-            Program._lastNavigationTime = DateTime.UtcNow.AddMilliseconds(-400);
+            pane.LastNavigationTime = DateTime.UtcNow.AddMilliseconds(-400);
             await Program.ProcessPendingNavigationAsync(pane);
             Assert.False(pane.NavRebuildPending);
             Assert.Equal(2, pane.Columns.Count);
@@ -209,12 +209,37 @@ public class AsyncColumnLoadTests
             Assert.True(pane.NavRebuildPending);
 
             // Simulate: this pane lost focus; idle processing must still handle it.
-            Program._lastNavigationTime = DateTime.UtcNow.AddMilliseconds(-400);
+            pane.LastNavigationTime = DateTime.UtcNow.AddMilliseconds(-400);
             await Program.ProcessPendingNavigationAsync(pane);
 
             Assert.False(pane.NavRebuildPending);
             Assert.Equal(2, pane.Columns.Count);
             Assert.EndsWith("d2", pane.Columns[1].Path);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task PendingNav_DebounceIsPerPane_OtherPaneActivityDoesNotDefer()
+    {
+        string root = MakeTempDir();
+        Directory.CreateDirectory(Path.Combine(root, "d1"));
+        Directory.CreateDirectory(Path.Combine(root, "d2"));
+        try
+        {
+            Pane paneA = await MakePaneAtAsync(root);
+            paneA.Columns[0].Selected = 0;
+            Program.MoveDown(paneA);                       // pending, timestamps A=now
+            Pane paneB = await MakePaneAtAsync(root);
+            paneB.LastNavigationTime = DateTime.UtcNow;    // B is actively navigating "now"
+
+            paneA.LastNavigationTime = DateTime.UtcNow.AddMilliseconds(-400); // A idle past debounce
+
+            await Program.ProcessPendingNavigationAsync(paneA);
+
+            // A's rebuild must proceed regardless of B's fresh activity.
+            Assert.False(paneA.NavRebuildPending);
+            Assert.Equal(2, paneA.Columns.Count);
         }
         finally { Directory.Delete(root, true); }
     }
