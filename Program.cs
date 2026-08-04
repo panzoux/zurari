@@ -3514,7 +3514,7 @@ static class Program
     // The real mechanism (mirroring RefreshCurrentAsync) is: save cursor memory for the path, build
     // a brand-new Column via CreateColumnAsync (which re-lists from disk and restores the cursor via
     // ApplyCursorMemory/SeekRestoreTo), carry over Marked state, then swap it into the pane.
-    static async Task RefreshPaneNowAsync(Pane pane, HashSet<string>? onlyDirs = null)
+    internal static async Task RefreshPaneNowAsync(Pane pane, HashSet<string>? onlyDirs = null)
     {
         int deepestAffected = -1;
         for (int i = 0; i < pane.Columns.Count; i++)
@@ -3525,11 +3525,22 @@ static class Program
 
             SaveCursorMemory(current);
             Column refreshed = await CreateColumnAsync(current.Path);
-            if (refreshed.LoadingTask != null)
-                await refreshed.LoadingTask;
-
             refreshed.Marked = current.Marked;
-            MarkHelper.ReconcileAfterReload(refreshed);
+            if (refreshed.LoadingTask != null)
+            {
+                // Reconcile marks only once entries are known. Runs on a pool thread like the
+                // loader itself; draw already tolerates concurrent Entries mutation, and Marked
+                // reconciliation is the same class of benign race.
+                _ = refreshed.LoadingTask.ContinueWith(_ =>
+                {
+                    MarkHelper.ReconcileAfterReload(refreshed);
+                    _redrawGate.Request();
+                }, TaskContinuationOptions.OnlyOnRanToCompletion);
+            }
+            else
+            {
+                MarkHelper.ReconcileAfterReload(refreshed);
+            }
 
             pane.Columns[i] = refreshed;
             deepestAffected = i;

@@ -160,4 +160,27 @@ public class AsyncColumnLoadTests
         }
         finally { Directory.Delete(root, true); }
     }
+
+    [Fact]
+    public async Task RefreshPaneNow_DoesNotAwaitLoad_AndReconcilesMarksAfter()
+    {
+        string root = MakeTempDir("a.txt", "b.txt");
+        try
+        {
+            Pane pane = await MakePaneAtAsync(root);
+            pane.Columns[0].Marked.Add("a.txt");
+            pane.Columns[0].Marked.Add("ghost.txt"); // no longer on disk
+
+            await Program.RefreshPaneNowAsync(pane);
+
+            Column refreshed = pane.Columns[0];
+            if (refreshed.LoadingTask != null) await refreshed.LoadingTask;
+            // Mark reconciliation runs as a continuation of the load: poll briefly.
+            for (int i = 0; i < 100 && refreshed.Marked.Contains("ghost.txt"); i++)
+                await Task.Delay(10);
+            Assert.Contains("a.txt", refreshed.Marked);
+            Assert.DoesNotContain("ghost.txt", refreshed.Marked);
+        }
+        finally { Directory.Delete(root, true); }
+    }
 }
