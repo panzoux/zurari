@@ -3736,19 +3736,6 @@ static class Program
         return Task.FromResult(column);
     }
 
-    static string GetRealPath(string path)
-    {
-        try
-        {
-            DirectoryInfo di = new DirectoryInfo(path);
-            return di.FullName;
-        }
-        catch
-        {
-            return path;
-        }
-    }
-
     static bool IsValidPath(string path)
     {
         try
@@ -3759,31 +3746,6 @@ static class Program
         catch
         {
             return false;
-        }
-    }
-
-    static string FindDeepestAccessiblePath(string path)
-    {
-        try
-        {
-            DirectoryInfo di = new DirectoryInfo(path);
-            if (di.Exists)
-                return path;
-
-            // Walk backward to find the deepest accessible parent
-            while (di.Parent != null)
-            {
-                di = di.Parent;
-                if (di.Exists)
-                    return di.FullName;
-            }
-
-            // Return root as fallback
-            return IsWindows() ? "C:\\" : "/";
-        }
-        catch
-        {
-            return IsWindows() ? "C:\\" : "/";
         }
     }
 
