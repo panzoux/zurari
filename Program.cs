@@ -1024,6 +1024,7 @@ sealed class Column
     public int DirectoriesCount { get; set; }
     public CancellationTokenSource? ReadCts { get; set; }
     public Task? LoadingTask { get; set; }
+    public bool NeedsMarkReconcile;
 
     public Column(string path)
     {
@@ -1049,6 +1050,8 @@ sealed class Pane
     public LeapState Leap = new();
     public PreviewPane Preview = new();
     public bool NeedsRefresh; // ジョブ完了時の遅延再読込用 dirty フラグ(Phase 7 で使用)
+    public bool NavRebuildPending; // cursor moved but right-side rebuild deferred to idle tick (Phase 9)
+    public DateTime LastNavigationTime = DateTime.MinValue;
 }
 
 sealed class ScreenState
@@ -2755,7 +2758,6 @@ static class Program
 
     internal static readonly ScreenState State = new ScreenState();
     static Pane FocusedPane => State.Panes[State.FocusedPane];
-    static DateTime _lastNavigationTime = DateTime.MinValue;
     static string? _lastErrorMessage = null;
     static DateTime _lastJobSummaryRenderTime = DateTime.MinValue;
     static string? _cachedJobSummary = null;
@@ -2806,7 +2808,7 @@ static class Program
             string root = GetRootPath();
             State.Panes.Add(new Pane());
             State.FocusedPane = 0;
-            FocusedPane.Columns.Add(CreateColumn(root));
+            FocusedPane.Columns.Add(await CreateColumnAsync(root));
             await RebuildRightSideAsync(FocusedPane, 0);
 
             while (true)
@@ -2868,6 +2870,16 @@ static class Program
                         openJobList.Selected = Math.Min(previousSelected, Math.Max(0, openJobList.Snapshot.Count - 1));
                         _lastJobPollTime = DateTime.UtcNow;
                         _redrawGate.Request();
+                    }
+
+                    if (State.Dialog == null)
+                    {
+                        foreach (Pane p in State.Panes)
+                        {
+                            await ProcessPendingNavigationAsync(p);
+                            await ExtendRightSideIfReadyAsync(p);
+                            ProcessPendingMarkReconciles(p);
+                        }
                     }
                     System.Threading.Thread.Sleep(50);
                     continue;
@@ -2952,6 +2964,10 @@ static class Program
             System.Runtime.InteropServices.OSPlatform.Windows);
     }
 
+    // Console.WindowWidth/Height throw IOException when no console is attached (tests, redirected IO).
+    internal static int SafeWindowWidth()  { try { return Console.WindowWidth; }  catch { return 120; } }
+    internal static int SafeWindowHeight() { try { return Console.WindowHeight; } catch { return 30; } }
+
     static bool SelectedItemIsFileOrDrive(Pane pane)
     {
         if (pane.ActiveColumn < 0 || pane.ActiveColumn >= pane.Columns.Count) return false;
@@ -2980,7 +2996,7 @@ static class Program
         return (System.IO.Path.Combine(c.Path, name), false);
     }
 
-    static void StartPreviewLoad(Pane pane, bool forceReload = false)
+    internal static void StartPreviewLoad(Pane pane, bool forceReload = false)
     {
         if (!pane.Preview.IsVisible) return;
 
@@ -3045,36 +3061,39 @@ static class Program
         pane.Preview.IsLoading = true;
         pane.Preview.Content = null;
 
-        // Read first 16 bytes for type detection
-        byte[] magic = new byte[16];
-        try
-        {
-            if (!isDrive)
-            {
-                using var fs = File.OpenRead(path);
-                fs.Read(magic, 0, 16);
-            }
-        }
-        catch { }
-
-        FileType fileType = isDrive
-            ? new FileType(FileCategory.Drive, "Drive")
-            : FileTypeDetector.Detect(path, magic);
-        pane.Preview.CurrentType = fileType;
-
         var cts = new CancellationTokenSource();
         pane.Preview.Cts = cts;
-        int termWidth = Console.WindowWidth;
+        int termWidth = SafeWindowWidth();
         int drawnCols = 0;
         for (int i = pane.HorizontalScroll; i < pane.Columns.Count && (drawnCols + 1) * ColumnWidth <= termWidth; i++)
             drawnCols++;
         int width = Math.Max(ColumnWidth, termWidth - drawnCols * ColumnWidth);
-        int height = Console.WindowHeight;
+        int height = SafeWindowHeight();
 
         _ = Task.Run(async () =>
         {
             try
             {
+                // Type detection (file open + magic-byte read) moved here from the caller:
+                // opening a handle on a slow/cloud drive can stall on placeholder hydration,
+                // and this now runs on every keystroke during file-to-file navigation — it
+                // must never block the main input thread.
+                byte[] magic = new byte[16];
+                if (!isDrive)
+                {
+                    try
+                    {
+                        using var fs = File.OpenRead(path);
+                        await fs.ReadAsync(magic, 0, 16, cts.Token);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch { }
+                }
+                FileType fileType = isDrive
+                    ? new FileType(FileCategory.Drive, "Drive")
+                    : FileTypeDetector.Detect(path, magic);
+                pane.Preview.CurrentType = fileType;
+
                 var content = await PreviewLoader.LoadAsync(path, isDrive, fileType, width, height, cts.Token);
                 if (!cts.Token.IsCancellationRequested)
                 {
@@ -3100,11 +3119,11 @@ static class Program
         switch (key.Key)
         {
             case ConsoleKey.UpArrow:
-                await MoveUpAsync(pane);
+                MoveUp(pane);
                 break;
 
             case ConsoleKey.DownArrow:
-                await MoveDownAsync(pane);
+                MoveDown(pane);
                 break;
 
             case ConsoleKey.LeftArrow:
@@ -3217,28 +3236,28 @@ static class Program
             case ConsoleKey.PageUp:
                 NavigationHelper.PageUp(pane.Columns[pane.ActiveColumn], Console.WindowHeight - 3);
                 UpdateHorizontalScroll(pane);
-                await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                MarkNavDirty(pane);
                 if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 break;
 
             case ConsoleKey.PageDown:
                 NavigationHelper.PageDown(pane.Columns[pane.ActiveColumn], Console.WindowHeight - 3);
                 UpdateHorizontalScroll(pane);
-                await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                MarkNavDirty(pane);
                 if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 break;
 
             case ConsoleKey.Home:
                 NavigationHelper.GoHome(pane.Columns[pane.ActiveColumn]);
                 UpdateHorizontalScroll(pane);
-                await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                MarkNavDirty(pane);
                 if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 break;
 
             case ConsoleKey.End:
                 NavigationHelper.GoEnd(pane.Columns[pane.ActiveColumn]);
                 UpdateHorizontalScroll(pane);
-                await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                MarkNavDirty(pane);
                 if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 break;
 
@@ -3248,7 +3267,7 @@ static class Program
                     // g → top (must have NO modifiers)
                     NavigationHelper.GoHome(pane.Columns[pane.ActiveColumn]);
                     UpdateHorizontalScroll(pane);
-                    await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                    MarkNavDirty(pane);
                     if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 }
                 else if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
@@ -3256,7 +3275,7 @@ static class Program
                     // G → bottom
                     NavigationHelper.GoEnd(pane.Columns[pane.ActiveColumn]);
                     UpdateHorizontalScroll(pane);
-                    await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                    MarkNavDirty(pane);
                     if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 }
                 break;
@@ -3266,7 +3285,7 @@ static class Program
                 {
                     NavigationHelper.PageUp(pane.Columns[pane.ActiveColumn], Console.WindowHeight - 3);
                     UpdateHorizontalScroll(pane);
-                    await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                    MarkNavDirty(pane);
                     if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 }
                 else if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
@@ -3284,7 +3303,7 @@ static class Program
                 {
                     NavigationHelper.PageDown(pane.Columns[pane.ActiveColumn], Console.WindowHeight - 3);
                     UpdateHorizontalScroll(pane);
-                    await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                    MarkNavDirty(pane);
                     if (pane.Preview.IsVisible) StartPreviewLoad(pane);
                 }
                 break;
@@ -3502,7 +3521,7 @@ static class Program
     // The real mechanism (mirroring RefreshCurrentAsync) is: save cursor memory for the path, build
     // a brand-new Column via CreateColumnAsync (which re-lists from disk and restores the cursor via
     // ApplyCursorMemory/SeekRestoreTo), carry over Marked state, then swap it into the pane.
-    static async Task RefreshPaneNowAsync(Pane pane, HashSet<string>? onlyDirs = null)
+    internal static async Task RefreshPaneNowAsync(Pane pane, HashSet<string>? onlyDirs = null)
     {
         int deepestAffected = -1;
         for (int i = 0; i < pane.Columns.Count; i++)
@@ -3512,12 +3531,18 @@ static class Program
                 continue;
 
             SaveCursorMemory(current);
-            Column refreshed = await CreateColumnAsync(current.Path, CancellationToken.None);
-            if (refreshed.LoadingTask != null)
-                await refreshed.LoadingTask;
-
+            Column refreshed = await CreateColumnAsync(current.Path);
             refreshed.Marked = current.Marked;
-            MarkHelper.ReconcileAfterReload(refreshed);
+            if (refreshed.LoadingTask != null)
+            {
+                // Reconcile only once entries are loaded — and on the sequential main-loop
+                // thread (idle tick), never in parallel with Spacebar mark toggling.
+                refreshed.NeedsMarkReconcile = true;
+            }
+            else
+            {
+                MarkHelper.ReconcileAfterReload(refreshed);
+            }
 
             pane.Columns[i] = refreshed;
             deepestAffected = i;
@@ -3539,64 +3564,7 @@ static class Program
             await RefreshAffectedColumnsAsync(job);
     }
 
-    static Column CreateColumn(string path)
-    {
-        Column column = new Column(path);
-
-        // Special case: drive list for Windows
-        if (path == "::DRIVES::")
-        {
-            try
-            {
-                DriveInfo[] drives = DriveInfo.GetDrives();
-                for (int i = 0; i < drives.Length; i++)
-                {
-                    if (drives[i].IsReady)
-                    {
-                        column.Entries.Add(drives[i].Name.TrimEnd('\\') + "/");
-                    }
-                }
-            }
-            catch
-            {
-            }
-            return column;
-        }
-
-        if (!IsValidPath(path))
-            return column;
-
-        try
-        {
-            // Directories first
-            string[] dirs = Directory.GetDirectories(path);
-            Array.Sort(dirs, StringComparer.OrdinalIgnoreCase);
-
-            for (int i = 0; i < dirs.Length; i++)
-            {
-                string name = Path.GetFileName(dirs[i]);
-                column.Entries.Add(name + "/");
-            }
-
-            // Then files
-            string[] files = Directory.GetFiles(path);
-            Array.Sort(files, StringComparer.OrdinalIgnoreCase);
-
-            for (int i = 0; i < files.Length; i++)
-            {
-                column.Entries.Add(Path.GetFileName(files[i]));
-            }
-        }
-        catch
-        {
-            // Permission denied, etc.
-        }
-
-        column.CachedTime = DateTime.UtcNow;
-        return column;
-    }
-
-    static Task<Column> CreateColumnAsync(string path, CancellationToken ct)
+    internal static Task<Column> CreateColumnAsync(string path)
     {
         Column column = new Column(path);
 
@@ -3622,23 +3590,20 @@ static class Program
             return Task.FromResult(column);
         }
 
-        if (!IsValidPath(path))
-        {
-            column.IsLoading = false;
-            return Task.FromResult(column);
-        }
-
         column.IsLoading = true;
         column.EntriesRead = 0;
         column.DirectoriesCount = 0;
         column.ReadCts = new CancellationTokenSource();
+        CancellationToken ct = column.ReadCts.Token;
         ApplyCursorMemory(column);
 
         column.LoadingTask = Task.Run(async () =>
         {
             try
             {
-                int visibleHeight = Console.WindowHeight - 3;
+                if (!IsValidPath(path)) return;
+
+                int visibleHeight = SafeWindowHeight() - 3;
                 int bufferSize = Math.Max(100, visibleHeight + 20);
 
                 List<string> dirs = new List<string>();
@@ -3750,7 +3715,7 @@ static class Program
                         {
                             // Permission denied or other errors
                         }
-                    }, ct);
+                    });
                 }
             }
             catch (OperationCanceledException)
@@ -3768,23 +3733,10 @@ static class Program
                 SeekRestoreTo(column);
                 _redrawGate.Request();
             }
-        }, ct);
+        });
 
         column.CachedTime = DateTime.UtcNow;
         return Task.FromResult(column);
-    }
-
-    static string GetRealPath(string path)
-    {
-        try
-        {
-            DirectoryInfo di = new DirectoryInfo(path);
-            return di.FullName;
-        }
-        catch
-        {
-            return path;
-        }
     }
 
     static bool IsValidPath(string path)
@@ -3800,35 +3752,36 @@ static class Program
         }
     }
 
-    static string FindDeepestAccessiblePath(string path)
+    // Resolves symlinks/junctions to their real target for cycle detection; returns the
+    // input path (best-effort normalized) if it isn't a link or resolution fails.
+    internal static string ResolveCanonicalPath(string path)
     {
         try
         {
-            DirectoryInfo di = new DirectoryInfo(path);
-            if (di.Exists)
-                return path;
-
-            // Walk backward to find the deepest accessible parent
-            while (di.Parent != null)
-            {
-                di = di.Parent;
-                if (di.Exists)
-                    return di.FullName;
-            }
-
-            // Return root as fallback
-            return IsWindows() ? "C:\\" : "/";
+            var target = Directory.ResolveLinkTarget(path, returnFinalTarget: true);
+            if (target != null) return target.FullName;
         }
         catch
         {
-            return IsWindows() ? "C:\\" : "/";
+            // Not a link, or resolution failed for a reason unrelated to "not a link"
+            // (e.g. certain path forms make ResolveLinkTarget throw even though the path
+            // is real and DirectoryInfo can still normalize it). Fall through below.
+        }
+
+        try
+        {
+            return new DirectoryInfo(path).FullName;
+        }
+        catch
+        {
+            return path;
         }
     }
 
-    static async Task MoveUpAsync(Pane pane)
+    internal static void MoveUp(Pane pane)
     {
         Column c = pane.Columns[pane.ActiveColumn];
-        int visibleHeight = Console.WindowHeight - 2;
+        int visibleHeight = SafeWindowHeight() - 2;
 
         if (c.Selected > 0)
         {
@@ -3839,26 +3792,15 @@ static class Program
                 c.ScrollOffset = c.Selected;
 
             UpdateHorizontalScroll(pane);
-
-            // Reset debounce timer on every cursor move, rebuild if cursor stable for 300ms
-            if (IsNavigationDebounced())
-            {
-                await RebuildRightSideAsync(pane, pane.ActiveColumn);
-            }
-            else
-            {
-                CancelRightSideReads(pane, pane.ActiveColumn);
-                // Validate right pane matches current cursor; rebuild immediately if stale
-                await ValidateAndRebuildRightPaneIfNeeded(pane, pane.ActiveColumn);
-            }
+            MarkNavDirty(pane);
             if (pane.Preview.IsVisible) StartPreviewLoad(pane);
         }
     }
 
-    static async Task MoveDownAsync(Pane pane)
+    internal static void MoveDown(Pane pane)
     {
         Column c = pane.Columns[pane.ActiveColumn];
-        int visibleHeight = Console.WindowHeight - 2;
+        int visibleHeight = SafeWindowHeight() - 2;
 
         if (c.Selected + 1 < c.Entries.Count)
         {
@@ -3869,30 +3811,61 @@ static class Program
                 c.ScrollOffset = c.Selected - visibleHeight + 1;
 
             UpdateHorizontalScroll(pane);
-
-            // Reset debounce timer on every cursor move, rebuild if cursor stable for 300ms
-            if (IsNavigationDebounced())
-            {
-                await RebuildRightSideAsync(pane, pane.ActiveColumn);
-            }
-            else
-            {
-                CancelRightSideReads(pane, pane.ActiveColumn);
-                // Validate right pane matches current cursor; rebuild immediately if stale
-                await ValidateAndRebuildRightPaneIfNeeded(pane, pane.ActiveColumn);
-            }
+            MarkNavDirty(pane);
             if (pane.Preview.IsVisible) StartPreviewLoad(pane);
         }
     }
 
-    static bool IsNavigationDebounced()
+    // Called on every cursor move. Never touches the disk: cancels in-flight right-side
+    // reads, prunes right columns that no longer match the selection, and defers the
+    // rebuild to ProcessPendingNavigationAsync (idle tick, after the cursor is stable).
+    internal static void MarkNavDirty(Pane pane)
     {
-        DateTime now = DateTime.UtcNow;
-        // Check if 300ms has passed since cursor LAST MOVED (not last rebuild)
-        // Always update timer on cursor move to implement "reset on move" behavior
-        bool shouldRebuild = (now - _lastNavigationTime).TotalMilliseconds >= NavigationDebounceMs;
-        _lastNavigationTime = now;  // Reset timer on every cursor move
-        return shouldRebuild;
+        CancelRightSideReads(pane, pane.ActiveColumn);
+        PruneStaleRightColumns(pane, pane.ActiveColumn);
+        pane.NavRebuildPending = true;
+        pane.LastNavigationTime = DateTime.UtcNow;
+    }
+
+    static void PruneStaleRightColumns(Pane pane, int columnIndex)
+    {
+        string? currentSelection = GetSelectedDirectory(pane, columnIndex);
+        Column? right = pane.Columns.Count > columnIndex + 1 ? pane.Columns[columnIndex + 1] : null;
+        // Keep a matching right column visible (avoids flicker, cf. commit f11252c);
+        // prune when the cursor is on a file or the right column shows a different dir.
+        if (right != null && currentSelection == right.Path) return;
+        while (pane.Columns.Count > columnIndex + 1)
+        {
+            Column col = pane.Columns[pane.Columns.Count - 1];
+            col.ReadCts?.Cancel();
+            SaveCursorMemory(col);
+            pane.Columns.RemoveAt(pane.Columns.Count - 1);
+        }
+    }
+
+    // Runs on the idle tick (sequential with all mark mutation): finishes the deferred
+    // mark reconciliation for columns whose reload has completed.
+    internal static void ProcessPendingMarkReconciles(Pane pane)
+    {
+        foreach (Column col in pane.Columns)
+        {
+            if (col.NeedsMarkReconcile && !col.IsLoading)
+            {
+                col.NeedsMarkReconcile = false;
+                MarkHelper.ReconcileAfterReload(col);
+                _redrawGate.Request();
+            }
+        }
+    }
+
+    internal static async Task ProcessPendingNavigationAsync(Pane pane)
+    {
+        if (!pane.NavRebuildPending) return;
+        if ((DateTime.UtcNow - pane.LastNavigationTime).TotalMilliseconds < NavigationDebounceMs) return;
+        pane.NavRebuildPending = false;
+        await RebuildRightSideAsync(pane, pane.ActiveColumn);
+        if (pane.Preview.IsVisible) StartPreviewLoad(pane);
+        _redrawGate.Request();
     }
 
     static void CancelRightSideReads(Pane pane, int columnIndex)
@@ -3902,41 +3875,6 @@ static class Program
         for (int i = columnIndex + 1; i < pane.Columns.Count; i++)
         {
             pane.Columns[i].ReadCts?.Cancel();
-        }
-    }
-
-    static async Task ValidateAndRebuildRightPaneIfNeeded(Pane pane, int columnIndex)
-    {
-        // Check if right pane matches current cursor selection
-        // Rebuild if: cursor on directory but no right pane, or right pane is stale
-        string? currentSelection = GetSelectedDirectory(pane, columnIndex);
-
-        if (currentSelection == null)
-        {
-            // Cursor on file — prune any stale right columns left over from previous selection
-            while (pane.Columns.Count > columnIndex + 1)
-            {
-                Column col = pane.Columns[pane.Columns.Count - 1];
-                col.ReadCts?.Cancel();
-                SaveCursorMemory(col);
-                pane.Columns.RemoveAt(pane.Columns.Count - 1);
-            }
-            return;
-        }
-
-        if (pane.Columns.Count <= columnIndex + 1)
-        {
-            // No right pane yet, but cursor points to directory → create it
-            await RebuildRightSideAsync(pane, columnIndex);
-            return;
-        }
-
-        Column rightPane = pane.Columns[columnIndex + 1];
-
-        // If right pane's path doesn't match what cursor points to, rebuild immediately
-        if (currentSelection != rightPane.Path)
-        {
-            await RebuildRightSideAsync(pane, columnIndex);
         }
     }
 
@@ -3984,7 +3922,7 @@ static class Program
     static void UpdateHorizontalScroll(Pane pane)
     {
         bool previewTakesSlot = pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane);
-        int visibleColumns = Math.Max(1, Console.WindowWidth / ColumnWidth - (previewTakesSlot ? 1 : 0));
+        int visibleColumns = Math.Max(1, SafeWindowWidth() / ColumnWidth - (previewTakesSlot ? 1 : 0));
 
         // Only reserve a right-column slot when on a directory — files never expand rightward,
         // and the old dir column may still be in Columns during async rebuild.
@@ -4220,7 +4158,7 @@ static class Program
             // RefreshCurrentAsync replaces pane.Columns[pane.ActiveColumn] with a brand-new
             // Column instance, so setting col.RestoreTo on the pre-rename Column would not
             // propagate. Build the refreshed column directly and set RestoreTo on it instead.
-            Column refreshed = await CreateColumnAsync(col.Path, CancellationToken.None);
+            Column refreshed = await CreateColumnAsync(col.Path);
             if (refreshed.LoadingTask != null) await refreshed.LoadingTask;
             refreshed.RestoreTo = isDir ? newName + "/" : newName;
             SeekRestoreTo(refreshed);
@@ -4457,7 +4395,7 @@ static class Program
 
         SaveCursorMemory(current);
 
-        Column refreshed = await CreateColumnAsync(currentPath, CancellationToken.None);
+        Column refreshed = await CreateColumnAsync(currentPath);
         if (refreshed.LoadingTask != null)
             await refreshed.LoadingTask;
 
@@ -4789,40 +4727,27 @@ static class Program
         ApplyLeapFilter(pane);
     }
 
-    static async Task MoveLeapCursorDownAsync(Pane pane)
+    static Task MoveLeapCursorDownAsync(Pane pane)
     {
         List<int> vis = pane.Leap.VisibleIndices;
-        if (vis.Count == 0) return;
+        if (vis.Count == 0) return Task.CompletedTask;
         int cur = vis.IndexOf(pane.Columns[pane.ActiveColumn].Selected);
         int next = Math.Min(cur + 1, vis.Count - 1);
         pane.Columns[pane.ActiveColumn].Selected = vis[next];
-        await RebuildRightSideOrValidateAsync(pane);
+        MarkNavDirty(pane);
+        return Task.CompletedTask;
     }
 
-    static async Task MoveLeapCursorUpAsync(Pane pane)
+    static Task MoveLeapCursorUpAsync(Pane pane)
     {
         List<int> vis = pane.Leap.VisibleIndices;
-        if (vis.Count == 0) return;
+        if (vis.Count == 0) return Task.CompletedTask;
         int cur = vis.IndexOf(pane.Columns[pane.ActiveColumn].Selected);
         if (cur < 0) cur = vis.Count;
         int prev = Math.Max(cur - 1, 0);
         pane.Columns[pane.ActiveColumn].Selected = vis[prev];
-        await RebuildRightSideOrValidateAsync(pane);
-    }
-
-    // Same debounce policy as MoveUpAsync/MoveDownAsync: full rebuild once the cursor
-    // is stable, cheap validate-and-prune while keys are still repeating.
-    static async Task RebuildRightSideOrValidateAsync(Pane pane)
-    {
-        if (IsNavigationDebounced())
-        {
-            await RebuildRightSideAsync(pane, pane.ActiveColumn);
-        }
-        else
-        {
-            CancelRightSideReads(pane, pane.ActiveColumn);
-            await ValidateAndRebuildRightPaneIfNeeded(pane, pane.ActiveColumn);
-        }
+        MarkNavDirty(pane);
+        return Task.CompletedTask;
     }
 
     static void ApplyLeapFilter(Pane pane)
@@ -5382,7 +5307,7 @@ static class Program
         return Path.Combine(c.Path, name.TrimEnd('/'));
     }
 
-    static async Task RebuildRightSideAsync(Pane pane, int columnIndex)
+    internal static async Task RebuildRightSideAsync(Pane pane, int columnIndex)
     {
         while (pane.Columns.Count > columnIndex + 1)
         {
@@ -5394,18 +5319,38 @@ static class Program
 
         string? nextPath = GetSelectedDirectory(pane, columnIndex);
 
+        StringComparer pathComparer = IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        HashSet<string> visitedCanonical = new HashSet<string>(
+            pane.Columns.Select(c => ResolveCanonicalPath(c.Path)), pathComparer);
+
         while (nextPath != null)
         {
-            Column next = await CreateColumnAsync(nextPath, CancellationToken.None);
-            if (next.LoadingTask != null)
-                await next.LoadingTask;
-            pane.Columns.Add(next);
+            string canonicalNext = ResolveCanonicalPath(nextPath);
+            if (visitedCanonical.Contains(canonicalNext))
+                break; // cycle: this directory (or a symlink resolving to it) is already in the chain
 
+            Column next = await CreateColumnAsync(nextPath);
+            pane.Columns.Add(next);
+            visitedCanonical.Add(canonicalNext);
+            // Entries aren't loaded yet, so the chain can't walk deeper here;
+            // ExtendRightSideIfReadyAsync continues it on idle ticks once the load lands.
+            if (next.IsLoading) break;
             nextPath = GetSelectedDirectory(pane, pane.Columns.Count - 1);
         }
 
         // Recalculate scroll now that the right-side column count is final.
         UpdateHorizontalScroll(pane);
+    }
+
+    internal static async Task ExtendRightSideIfReadyAsync(Pane pane)
+    {
+        if (pane.NavRebuildPending) return;
+        if (pane.Columns.Count == 0) return;
+        Column last = pane.Columns[pane.Columns.Count - 1];
+        if (last.IsLoading) return;
+        if (GetSelectedDirectory(pane, pane.Columns.Count - 1) == null) return;
+        await RebuildRightSideAsync(pane, pane.Columns.Count - 1);
+        _redrawGate.Request();
     }
 
     static async Task ToggleSplitAsync()
@@ -5422,7 +5367,7 @@ static class Program
             string initialPath = source.Columns[source.ActiveColumn].Path;
 
             Pane newPane = new Pane();
-            newPane.Columns.Add(CreateColumn(initialPath));
+            newPane.Columns.Add(await CreateColumnAsync(initialPath));
             await RebuildRightSideAsync(newPane, 0);
 
             State.Panes.Add(newPane);
@@ -5497,7 +5442,7 @@ static class Program
         pane.Columns.Clear();
 
         string rootMarker = GetRootPath();
-        Column rootColumn = await CreateColumnAsync(rootMarker, CancellationToken.None);
+        Column rootColumn = await CreateColumnAsync(rootMarker);
         if (rootColumn.LoadingTask != null) await rootColumn.LoadingTask;
         pane.Columns.Add(rootColumn);
 
@@ -5535,7 +5480,7 @@ static class Program
             current.Selected = idx;
 
             accumulatedPath = Path.Combine(accumulatedPath, segment);
-            Column next = await CreateColumnAsync(accumulatedPath, CancellationToken.None);
+            Column next = await CreateColumnAsync(accumulatedPath);
             if (next.LoadingTask != null) await next.LoadingTask;
 
             while (pane.Columns.Count > pane.ActiveColumn + 1)
@@ -5758,7 +5703,7 @@ static class Program
         State.PrevFrame = currentFrame;
     }
 
-    static string[] BuildFrame(int width, int height)
+    internal static string[] BuildFrame(int width, int height)
     {
         _framesBuilt++;
         Pane pane = FocusedPane;
@@ -5830,7 +5775,7 @@ static class Program
         }
 
         // Override status with preview-hidden hint only when terminal width is the limiting factor
-        if (pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane) && Console.WindowWidth < ColumnWidth * 2)
+        if (pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane) && width < ColumnWidth * 2)
         {
             _lastErrorMessage = "[preview hidden: narrow terminal]";
         }
@@ -5935,7 +5880,7 @@ static class Program
 
     internal static void DrawPaneToLines(Line[] lines, Pane pane, int yOffset, int height, bool focused, bool showOwnPathLine, int width)
     {
-        bool showPreview = pane.Preview.IsVisible && Console.WindowWidth >= ColumnWidth * 2;
+        bool showPreview = pane.Preview.IsVisible && width >= ColumnWidth * 2;
         bool filePreview = pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane);
 
         int displayX = 0;
