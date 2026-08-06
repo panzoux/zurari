@@ -2968,6 +2968,31 @@ static class Program
     internal static int SafeWindowWidth()  { try { return Console.WindowWidth; }  catch { return 120; } }
     internal static int SafeWindowHeight() { try { return Console.WindowHeight; } catch { return 30; } }
 
+    // Shared by BuildFrame (drawing) and StartPreviewLoad (canvas sizing) so a pane's actual
+    // available height can never drift between what gets drawn and what gets rasterized.
+    internal static (int Top, int Bottom) ComputeSplitPaneHeights(int consoleHeight)
+    {
+        int available = consoleHeight - 1 /* status row */ - 1 /* separator row */;
+        int topHeight = available / 2;
+        int bottomHeight = available - topHeight; // 端数は下ペインへ
+        return (topHeight, bottomHeight);
+    }
+
+    // The real height available to `pane` for preview rendering — matches what DrawPaneToLines
+    // will actually pass to DrawPreviewToLines as `bodyFrameHeight`, so preview content is
+    // rasterized for the space it will actually be drawn into (see ComputeSplitPaneHeights).
+    internal static int ComputePaneBodyFrameHeight(Pane pane)
+    {
+        int height = SafeWindowHeight();
+        if (!State.SplitActive)
+            return height; // showOwnPathLine=false, single pane: bodyFrameHeight == height
+
+        (int topHeight, int bottomHeight) = ComputeSplitPaneHeights(height);
+        bool isUpperPane = State.Panes.Count > 0 && ReferenceEquals(pane, State.Panes[0]);
+        int paneHeight = isUpperPane ? topHeight : bottomHeight;
+        return paneHeight + 1; // showOwnPathLine=true in split mode: bodyFrameHeight == height + 1
+    }
+
     static bool SelectedItemIsFileOrDrive(Pane pane)
     {
         if (pane.ActiveColumn < 0 || pane.ActiveColumn >= pane.Columns.Count) return false;
@@ -3068,7 +3093,7 @@ static class Program
         for (int i = pane.HorizontalScroll; i < pane.Columns.Count && (drawnCols + 1) * ColumnWidth <= termWidth; i++)
             drawnCols++;
         int width = Math.Max(ColumnWidth, termWidth - drawnCols * ColumnWidth);
-        int height = SafeWindowHeight();
+        int height = ComputePaneBodyFrameHeight(pane);
 
         _ = Task.Run(async () =>
         {
@@ -5744,9 +5769,7 @@ static class Program
             // Each pane now draws its own full-path line at the bottom of its own rectangle
             // (so source/destination paths are both visible at once for copy/move), so the
             // shared footer shrinks to just the 1 status row.
-            int available = height - 1 /* status row */ - 1 /* separator row */;
-            int topHeight = available / 2;
-            int bottomHeight = available - topHeight; // 端数は下ペインへ
+            (int topHeight, int bottomHeight) = ComputeSplitPaneHeights(height);
             int separatorRow = topHeight;
             int bottomOffset = topHeight + 1;
 

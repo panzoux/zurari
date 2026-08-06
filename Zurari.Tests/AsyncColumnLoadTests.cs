@@ -335,4 +335,51 @@ public class AsyncColumnLoadTests
         }
         finally { Directory.Delete(dir, true); }
     }
+
+    [Fact]
+    public void ComputePaneBodyFrameHeight_NonSplit_ReturnsFullConsoleHeight()
+    {
+        bool savedSplit = Program.State.SplitActive;
+        try
+        {
+            Program.State.SplitActive = false;
+            var pane = new Pane();
+            Assert.Equal(Program.SafeWindowHeight(), Program.ComputePaneBodyFrameHeight(pane));
+        }
+        finally { Program.State.SplitActive = savedSplit; }
+    }
+
+    [Fact]
+    public void ComputePaneBodyFrameHeight_Split_ReturnsHalfHeightPerPane_NotFullConsole()
+    {
+        bool savedSplit = Program.State.SplitActive;
+        var savedPanes = Program.State.Panes;
+        try
+        {
+            Program.State.SplitActive = true;
+            var top = new Pane();
+            var bottom = new Pane();
+            Program.State.Panes = new List<Pane> { top, bottom };
+
+            int fullHeight = Program.SafeWindowHeight();
+            (int expectedTop, int expectedBottom) = Program.ComputeSplitPaneHeights(fullHeight);
+
+            int actualTop = Program.ComputePaneBodyFrameHeight(top);
+            int actualBottom = Program.ComputePaneBodyFrameHeight(bottom);
+
+            Assert.Equal(expectedTop + 1, actualTop);
+            Assert.Equal(expectedBottom + 1, actualBottom);
+
+            // The core bug this fix closes: neither pane should get the FULL console height
+            // while split is active — that's what caused image/video previews to be
+            // rasterized ~2x taller than the space they're actually drawn into.
+            Assert.True(actualTop < fullHeight, "upper pane got full console height while split — the bug this fix closes");
+            Assert.True(actualBottom < fullHeight, "lower pane got full console height while split — the bug this fix closes");
+        }
+        finally
+        {
+            Program.State.SplitActive = savedSplit;
+            Program.State.Panes = savedPanes;
+        }
+    }
 }
