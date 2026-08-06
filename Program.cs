@@ -2996,7 +2996,7 @@ static class Program
         return (System.IO.Path.Combine(c.Path, name), false);
     }
 
-    static void StartPreviewLoad(Pane pane, bool forceReload = false)
+    internal static void StartPreviewLoad(Pane pane, bool forceReload = false)
     {
         if (!pane.Preview.IsVisible) return;
 
@@ -3061,36 +3061,39 @@ static class Program
         pane.Preview.IsLoading = true;
         pane.Preview.Content = null;
 
-        // Read first 16 bytes for type detection
-        byte[] magic = new byte[16];
-        try
-        {
-            if (!isDrive)
-            {
-                using var fs = File.OpenRead(path);
-                fs.Read(magic, 0, 16);
-            }
-        }
-        catch { }
-
-        FileType fileType = isDrive
-            ? new FileType(FileCategory.Drive, "Drive")
-            : FileTypeDetector.Detect(path, magic);
-        pane.Preview.CurrentType = fileType;
-
         var cts = new CancellationTokenSource();
         pane.Preview.Cts = cts;
-        int termWidth = Console.WindowWidth;
+        int termWidth = SafeWindowWidth();
         int drawnCols = 0;
         for (int i = pane.HorizontalScroll; i < pane.Columns.Count && (drawnCols + 1) * ColumnWidth <= termWidth; i++)
             drawnCols++;
         int width = Math.Max(ColumnWidth, termWidth - drawnCols * ColumnWidth);
-        int height = Console.WindowHeight;
+        int height = SafeWindowHeight();
 
         _ = Task.Run(async () =>
         {
             try
             {
+                // Type detection (file open + magic-byte read) moved here from the caller:
+                // opening a handle on a slow/cloud drive can stall on placeholder hydration,
+                // and this now runs on every keystroke during file-to-file navigation — it
+                // must never block the main input thread.
+                byte[] magic = new byte[16];
+                if (!isDrive)
+                {
+                    try
+                    {
+                        using var fs = File.OpenRead(path);
+                        await fs.ReadAsync(magic, 0, 16, cts.Token);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch { }
+                }
+                FileType fileType = isDrive
+                    ? new FileType(FileCategory.Drive, "Drive")
+                    : FileTypeDetector.Detect(path, magic);
+                pane.Preview.CurrentType = fileType;
+
                 var content = await PreviewLoader.LoadAsync(path, isDrive, fileType, width, height, cts.Token);
                 if (!cts.Token.IsCancellationRequested)
                 {

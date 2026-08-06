@@ -305,4 +305,34 @@ public class AsyncColumnLoadTests
         }
         finally { Directory.Delete(root, true); }
     }
+
+    [Fact]
+    public async Task StartPreviewLoad_DoesNotReadFileOnCallerThread()
+    {
+        string dir = MakeTempDir();
+        string filePath = Path.Combine(dir, "a.txt");
+        File.WriteAllText(filePath, "hello world");
+        try
+        {
+            Pane pane = await MakePaneAtAsync(dir);
+            pane.Columns[0].Selected = pane.Columns[0].Entries.IndexOf("a.txt");
+            Assert.True(pane.Columns[0].Selected >= 0);
+            pane.Preview.IsVisible = true;
+
+            Program.StartPreviewLoad(pane);
+
+            // Type detection (the file open + magic-byte read) must not have run synchronously
+            // on this thread — it's only ever set inside the background Task.Run.
+            Assert.Null(pane.Preview.CurrentType);
+            Assert.True(pane.Preview.IsLoading);
+
+            for (int i = 0; i < 200 && pane.Preview.IsLoading; i++)
+                await Task.Delay(10);
+
+            Assert.False(pane.Preview.IsLoading);
+            Assert.NotNull(pane.Preview.CurrentType);
+            Assert.NotNull(pane.Preview.Content);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
 }
