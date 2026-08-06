@@ -837,7 +837,15 @@ Fix (commit `f3b8709`): `ResolveCanonicalPath` helper (`Directory.ResolveLinkTar
 
 Known residual gap (documented, not blocking): a true mutual-symlink cycle where neither node is ever a real directory (`a→b→a`, both links) can make `ResolveLinkTarget` itself throw for one side, whose fallback then returns an unresolved nominal path — outside the reported bug's scope (self-referential dir symlinks), not fixed here.
 
-Also confirmed while investigating: preview loading (`StartPreviewLoad`) was already non-blocking (fire-and-forget cancellable `Task.Run`) before Phase 9 and needed no fix — except one narrow pre-existing gap out of scope: a synchronous 16-byte `File.OpenRead`/`Read` for file-type detection runs on the main thread on every keystroke when navigating file-to-file (not directory-to-directory) with preview open, which could still stutter on a cloud drive during file hydration. Not fixed as part of this phase.
+Also confirmed while investigating: preview loading (`StartPreviewLoad`) was already non-blocking (fire-and-forget cancellable `Task.Run`) before Phase 9 and needed no fix — except one narrow pre-existing gap: a synchronous 16-byte `File.OpenRead`/`Read` for file-type detection ran on the main thread on every keystroke when navigating file-to-file (not directory-to-directory) with preview open, which could stutter on a cloud drive during file hydration.
+
+## Task 10 (user-requested follow-up): preview type detection off the caller thread
+
+Fixed in commit `22c0b6b`. Moved the magic-byte read + `FileType` detection from before the `Task.Run` dispatch to inside it, alongside the existing `PreviewLoader.LoadAsync` call — `pane.Preview.CurrentType` (confirmed write-only, no readers anywhere) is now assigned only inside the background task. Also switched the two `Console.WindowWidth`/`Height` calls in this function to the existing `SafeWindowWidth()`/`SafeWindowHeight()` helpers (needed for headless testability, not itself a slow-drive fix — console size queries aren't disk I/O). `StartPreviewLoad` made `internal` for direct testing.
+
+New test `StartPreviewLoad_DoesNotReadFileOnCallerThread` asserts `CurrentType` is still null and `IsLoading` is true immediately after the synchronous call returns, then polls for completion. Spec+quality review independently reproduced both pre-fix defects (sync `CurrentType` assignment; raw `Console.*` calls throwing headlessly) in isolation to confirm the test genuinely catches the regression, not just incidentally failing — approved, no issues. 178/178 tests, 0 warnings.
+
+With this fix, every known synchronous-I/O gap on the navigation and preview paths is closed: cursor movement, directory reads, cancellation, job-refresh, rename, split/startup, and now preview type detection are all off the main input thread.
 
 ## Unresolved issues
 
