@@ -3749,6 +3749,32 @@ static class Program
         }
     }
 
+    // Resolves symlinks/junctions to their real target for cycle detection; returns the
+    // input path (best-effort normalized) if it isn't a link or resolution fails.
+    internal static string ResolveCanonicalPath(string path)
+    {
+        try
+        {
+            var target = Directory.ResolveLinkTarget(path, returnFinalTarget: true);
+            if (target != null) return target.FullName;
+        }
+        catch
+        {
+            // Not a link, or resolution failed for a reason unrelated to "not a link"
+            // (e.g. certain path forms make ResolveLinkTarget throw even though the path
+            // is real and DirectoryInfo can still normalize it). Fall through below.
+        }
+
+        try
+        {
+            return new DirectoryInfo(path).FullName;
+        }
+        catch
+        {
+            return path;
+        }
+    }
+
     internal static void MoveUp(Pane pane)
     {
         Column c = pane.Columns[pane.ActiveColumn];
@@ -5290,10 +5316,19 @@ static class Program
 
         string? nextPath = GetSelectedDirectory(pane, columnIndex);
 
+        StringComparer pathComparer = IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        HashSet<string> visitedCanonical = new HashSet<string>(
+            pane.Columns.Select(c => ResolveCanonicalPath(c.Path)), pathComparer);
+
         while (nextPath != null)
         {
+            string canonicalNext = ResolveCanonicalPath(nextPath);
+            if (visitedCanonical.Contains(canonicalNext))
+                break; // cycle: this directory (or a symlink resolving to it) is already in the chain
+
             Column next = await CreateColumnAsync(nextPath);
             pane.Columns.Add(next);
+            visitedCanonical.Add(canonicalNext);
             // Entries aren't loaded yet, so the chain can't walk deeper here;
             // ExtendRightSideIfReadyAsync continues it on idle ticks once the load lands.
             if (next.IsLoading) break;

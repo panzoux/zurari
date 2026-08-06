@@ -243,4 +243,66 @@ public class AsyncColumnLoadTests
         }
         finally { Directory.Delete(root, true); }
     }
+
+    [Fact]
+    public async Task RebuildRightSide_StopsOnCanonicalPathCycle_WithoutRealSymlink()
+    {
+        // Simulates a self-referential-symlink cycle (like "/bin/X11 -> .") without needing OS
+        // symlink privileges: Directory.Exists("<dir>/.") is true and its FullName resolves back
+        // to <dir> itself, so a "./" entry is a real, on-disk stand-in for a self-referential
+        // symlink -- both collapse to the same canonical path via ResolveCanonicalPath. This
+        // proves the guard mechanism deterministically, independent of OS symlink privilege.
+        string root = MakeTempDir();
+        string loopDir = Path.Combine(root, "loop");
+        Directory.CreateDirectory(loopDir);
+        try
+        {
+            Pane pane = await MakePaneAtAsync(root);
+            pane.Columns[0].Selected = pane.Columns[0].Entries.IndexOf("loop/");
+            Assert.True(pane.Columns[0].Selected >= 0);
+
+            await Program.RebuildRightSideAsync(pane, 0);
+            await pane.Columns[1].LoadingTask!;
+            Assert.Equal(2, pane.Columns.Count);
+            Assert.Equal(loopDir, pane.Columns[1].Path);
+
+            // Inject a self-referential entry into the child column: "./" nominally differs from
+            // loopDir's own path string, but Directory.Exists + FullName both resolve it back to
+            // loopDir -- exactly the nominal-vs-canonical mismatch that let /bin/X11 recurse forever.
+            pane.Columns[1].Entries = new List<string> { "./" };
+            pane.Columns[1].Selected = 0;
+
+            await Program.RebuildRightSideAsync(pane, 1);
+
+            // The guard must recognize "./" canonically resolves to loopDir, already present in
+            // the chain at index 1, and refuse to append a duplicate/cyclic column.
+            Assert.Equal(2, pane.Columns.Count);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task RebuildRightSide_StopsOnRealSelfReferentialSymlink()
+    {
+        // End-to-end regression for the actual reported bug: a directory symlink pointing back
+        // at its own parent (like "/bin/X11 -> .") must not cause unbounded right-side expansion.
+        string root = MakeTempDir();
+        try
+        {
+            string linkPath = Path.Combine(root, "selfloop");
+            Directory.CreateSymbolicLink(linkPath, root); // selfloop -> root (like /bin/X11 -> .)
+
+            Pane pane = await MakePaneAtAsync(root);       // root's only entry is "selfloop/"
+            pane.Columns[0].Selected = pane.Columns[0].Entries.IndexOf("selfloop/");
+            Assert.True(pane.Columns[0].Selected >= 0);
+
+            await Program.RebuildRightSideAsync(pane, 0);
+
+            // "selfloop" canonically resolves back to root, which is already the head of the
+            // chain -- the guard must refuse to expand into it at all, so no child column is
+            // ever appended (this is exactly the /bin/X11 scenario that recursed forever pre-fix).
+            Assert.Single(pane.Columns);
+        }
+        finally { Directory.Delete(root, true); }
+    }
 }
