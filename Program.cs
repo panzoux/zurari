@@ -6447,8 +6447,17 @@ static class Program
 
             case TextInputDialogState textInput:
             {
-                string beforeCursor = textInput.Buffer.Substring(0, textInput.CursorPos);
-                string atAndAfterCursor = textInput.Buffer.Substring(textInput.CursorPos);
+                // Cap the field at a fixed width and scroll so the cursor is always visible,
+                // instead of letting the dialog grow to the buffer's full width and truncating
+                // (which used to silently drop the cursor marker on long input — see spec:
+                // "Cursor visibility & horizontal scrolling"). -1 reserves a column for the
+                // cursor marker itself, which is inserted after slicing.
+                const int MaxFieldWidth = 50;
+                (int start, int end) = TextInputBuffer.ComputeScrollWindow(textInput.Buffer, textInput.CursorPos, MaxFieldWidth - 1);
+                string visible = textInput.Buffer.Substring(start, end - start);
+                int cursorInVisible = textInput.CursorPos - start;
+                string beforeCursor = visible.Substring(0, cursorInVisible);
+                string atAndAfterCursor = visible.Substring(cursorInVisible);
                 // 反転スペースだけだと配色によっては見えにくいため、実体のある全角ブロックを
                 // 反転表示することで、入力欄であることとカーソル位置の両方を分かりやすくする。
                 string displayLine = beforeCursor + "\x1b[7m█\x1b[0m" + atAndAfterCursor;
@@ -6456,7 +6465,7 @@ static class Program
                 {
                     displayLine,
                     "",
-                    "[Enter]Confirm  [Esc]Cancel",
+                    textInput.HintText,
                 };
             }
 
