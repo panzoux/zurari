@@ -3641,6 +3641,23 @@ static class Program
         await RebuildRightSideAsync(pane, deepestAffected);
     }
 
+    // Mirrors RefreshAffectedColumnsAsync's job-refresh logic, but for synchronous one-shot
+    // operations (Rename, Create Directory) instead of background jobs. `actingPane` is skipped
+    // deliberately: its active column was already replaced directly by the caller (with its own
+    // RestoreTo-driven cursor placement), and refreshing it again here would clobber that.
+    internal static async Task RefreshOtherPanesAsync(Pane actingPane, string affectedDir)
+    {
+        var affectedDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { affectedDir };
+        foreach (Pane pane in State.Panes)
+        {
+            if (ReferenceEquals(pane, actingPane)) continue;
+            if (!pane.Columns.Exists(c => affectedDirs.Contains(c.Path))) continue;
+
+            if (pane.Leap.Active || pane.Search.Active) { pane.NeedsRefresh = true; continue; }
+            await RefreshPaneNowAsync(pane, affectedDirs);
+        }
+    }
+
     static async Task RefreshActiveJobColumnsAsync()
     {
         List<BackgroundJob> active = JobManager.Snapshot().FindAll(j => j.Status == JobStatus.Running);
@@ -4310,6 +4327,7 @@ static class Program
             MarkHelper.ReconcileAfterReload(refreshed);
             pane.Columns[pane.ActiveColumn] = refreshed;
             await RebuildRightSideAsync(pane, pane.ActiveColumn);
+            await RefreshOtherPanesAsync(pane, col.Path);
         }
         else
         {
