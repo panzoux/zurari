@@ -4375,7 +4375,10 @@ static class Program
     static void SeekRestoreTo(Column col)
     {
         if (col.RestoreTo == null) return;
-        if (col.Entries.Count == 0) return; // not loaded yet — retry once entries arrive
+        // Not loaded yet — safe no-op. col.RestoreTo survives this call, and the loader's
+        // own `finally` (after entries are fully populated) calls SeekRestoreTo again —
+        // that second call is the actual retry, not a loop here.
+        if (col.Entries.Count == 0) return;
 
         string target = col.RestoreTo;
         for (int i = 0; i < col.Entries.Count; i++)
