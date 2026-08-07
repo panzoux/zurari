@@ -307,6 +307,51 @@ public class AsyncColumnLoadTests
     }
 
     [Fact]
+    public async Task RebuildRightSide_StopsOnMultiHopAncestorSymlink()
+    {
+        // Deeper variant of the /bin/X11 case: a\b\c\link_a -> a, where the symlink points at
+        // an ancestor two levels up (not its own immediate parent). The chain a -> b -> c is
+        // built up through real, non-symlinked directories first, so the guard must find the
+        // cycle by canonical path against the WHOLE existing column chain, not just the
+        // immediately preceding column.
+        string a = MakeTempDir();
+        try
+        {
+            string b = Path.Combine(a, "b");
+            string c = Path.Combine(b, "c");
+            string d = Path.Combine(c, "d");
+            Directory.CreateDirectory(d);
+            string linkPath = Path.Combine(c, "link_a");
+            Directory.CreateSymbolicLink(linkPath, a); // c/link_a -> a (two levels up, not self/parent)
+
+            Pane pane = await MakePaneAtAsync(a);      // pane.Columns[0] = a, only entry "b/"
+            pane.Columns[0].Selected = pane.Columns[0].Entries.IndexOf("b/");
+            Assert.True(pane.Columns[0].Selected >= 0);
+
+            await Program.RebuildRightSideAsync(pane, 0);
+            await pane.Columns[1].LoadingTask!;         // pane.Columns[1] = b, only entry "c/"
+            pane.Columns[1].Selected = pane.Columns[1].Entries.IndexOf("c/");
+            Assert.True(pane.Columns[1].Selected >= 0);
+
+            await Program.RebuildRightSideAsync(pane, 1);
+            await pane.Columns[2].LoadingTask!;         // pane.Columns[2] = c, entries "d/" and "link_a/"
+            pane.Columns[2].Selected = pane.Columns[2].Entries.IndexOf("link_a/");
+            Assert.True(pane.Columns[2].Selected >= 0);
+
+            int countBefore = pane.Columns.Count;       // 3: a, b, c
+            Assert.Equal(3, countBefore);
+
+            await Program.RebuildRightSideAsync(pane, 2);
+
+            // link_a canonically resolves to `a`, which is pane.Columns[0] -- already in the
+            // chain, two hops back rather than the immediate parent. The guard seeds from the
+            // full existing chain, so it must catch this exactly like the immediate-self case.
+            Assert.Equal(countBefore, pane.Columns.Count);
+        }
+        finally { Directory.Delete(a, true); }
+    }
+
+    [Fact]
     public async Task StartPreviewLoad_DoesNotReadFileOnCallerThread()
     {
         string dir = MakeTempDir();
