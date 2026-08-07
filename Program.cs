@@ -1324,11 +1324,13 @@ sealed class ConfirmDialogState : DialogState
 
 sealed class TextInputDialogState : DialogState
 {
+    public const string DefaultHintText = "[Enter]Confirm  [Esc]Cancel";
+
     public string Buffer = "";
     public int CursorPos;
     public Action<string?> OnResult = _ => { }; // null=キャンセル
     public Func<char, bool>? CharFilter;         // null = accept all (Rename's existing behavior)
-    public string HintText = "[Enter]Confirm  [Esc]Cancel";
+    public string HintText = DefaultHintText;
 }
 
 sealed class ListSelectDialogState : DialogState
@@ -5012,7 +5014,7 @@ static class Program
     }
 
     static void ShowTextInput(string title, string initialValue, Action<string?> onResult,
-        Func<char, bool>? charFilter = null, string hintText = "[Enter]Confirm  [Esc]Cancel")
+        Func<char, bool>? charFilter = null, string hintText = TextInputDialogState.DefaultHintText)
     {
         State.Dialog = new TextInputDialogState
         {
