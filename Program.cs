@@ -1518,11 +1518,12 @@ static class TextInputBuffer
     // visibility & horizontal scrolling").
     public static (int Start, int End) ComputeScrollWindow(string buffer, int cursorPos, int maxWidth)
     {
+        int pos = Math.Clamp(cursorPos, 0, buffer.Length);
         int totalWidth = CharacterWidth.GetStringWidth(buffer);
         if (totalWidth <= maxWidth)
             return (0, buffer.Length);
 
-        int cursorCol = CharacterWidth.GetStringWidth(buffer.Substring(0, cursorPos));
+        int cursorCol = CharacterWidth.GetStringWidth(buffer.Substring(0, pos));
 
         int start;
         if (cursorCol <= maxWidth)
@@ -1533,7 +1534,7 @@ static class TextInputBuffer
         {
             // Right-align: walk backward from the cursor until one more character would
             // overflow maxWidth.
-            start = cursorPos;
+            start = pos;
             int width = 0;
             while (start > 0)
             {
