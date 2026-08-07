@@ -1511,6 +1511,52 @@ static class TextInputBuffer
         int pos = Math.Clamp(cursorPos, 0, buffer.Length);
         return CharacterWidth.GetStringWidth(buffer.Substring(0, pos));
     }
+
+    // Returns the [Start, End) character-index range of `buffer` that fits within `maxWidth`
+    // display columns while always including `cursorPos`. Used to keep the cursor visible in a
+    // width-capped dialog field instead of letting it scroll off-screen (see spec: "Cursor
+    // visibility & horizontal scrolling").
+    public static (int Start, int End) ComputeScrollWindow(string buffer, int cursorPos, int maxWidth)
+    {
+        int totalWidth = CharacterWidth.GetStringWidth(buffer);
+        if (totalWidth <= maxWidth)
+            return (0, buffer.Length);
+
+        int cursorCol = CharacterWidth.GetStringWidth(buffer.Substring(0, cursorPos));
+
+        int start;
+        if (cursorCol <= maxWidth)
+        {
+            start = 0;
+        }
+        else
+        {
+            // Right-align: walk backward from the cursor until one more character would
+            // overflow maxWidth.
+            start = cursorPos;
+            int width = 0;
+            while (start > 0)
+            {
+                int w = CharacterWidth.GetStringWidth(buffer[start - 1].ToString());
+                if (width + w > maxWidth) break;
+                width += w;
+                start--;
+            }
+        }
+
+        int startCol = CharacterWidth.GetStringWidth(buffer.Substring(0, start));
+        int end = start;
+        int endCol = startCol;
+        while (end < buffer.Length)
+        {
+            int w = CharacterWidth.GetStringWidth(buffer[end].ToString());
+            if (endCol - startCol + w > maxWidth) break;
+            endCol += w;
+            end++;
+        }
+
+        return (start, end);
+    }
 }
 
 static class ListFilter
