@@ -1327,6 +1327,8 @@ sealed class TextInputDialogState : DialogState
     public string Buffer = "";
     public int CursorPos;
     public Action<string?> OnResult = _ => { }; // null=キャンセル
+    public Func<char, bool>? CharFilter;         // null = accept all (Rename's existing behavior)
+    public string HintText = "[Enter]Confirm  [Esc]Cancel";
 }
 
 sealed class ListSelectDialogState : DialogState
@@ -5009,7 +5011,8 @@ static class Program
         };
     }
 
-    static void ShowTextInput(string title, string initialValue, Action<string?> onResult)
+    static void ShowTextInput(string title, string initialValue, Action<string?> onResult,
+        Func<char, bool>? charFilter = null, string hintText = "[Enter]Confirm  [Esc]Cancel")
     {
         State.Dialog = new TextInputDialogState
         {
@@ -5017,6 +5020,8 @@ static class Program
             Buffer = initialValue,
             CursorPos = initialValue.Length,
             OnResult = onResult,
+            CharFilter = charFilter,
+            HintText = hintText,
         };
     }
 
@@ -5263,10 +5268,17 @@ static class Program
             return;
         }
 
+        if (key.Key == ConsoleKey.U && (key.Modifiers & ConsoleModifiers.Control) != 0)
+        {
+            dialog.Buffer = "";
+            dialog.CursorPos = 0;
+            return;
+        }
+
         // 文字受け取り: HandleSearchKeyAsync と同一の判定(制御文字を除外)。
         // IME確定文字・サロゲートペアもここを通り、TextInputBuffer.Insert が
         // string.Insert で正しく結合する(Program.cs の HandleSearchKeyAsync 実装を参照)。
-        if (!char.IsControl(key.KeyChar))
+        if (!char.IsControl(key.KeyChar) && (dialog.CharFilter == null || dialog.CharFilter(key.KeyChar)))
         {
             (dialog.Buffer, dialog.CursorPos) = TextInputBuffer.Insert(dialog.Buffer, dialog.CursorPos, key.KeyChar);
             return;
