@@ -6030,7 +6030,9 @@ static class Program
     static void DrawDialogOverlay(string[] frame, int width, int height)
     {
         if (State.Dialog == null) return;
-        ComposeDialogIntoFrame(frame, State.Dialog, width, height);
+
+        (int dialogY, int dialogHeight) = ComputeFocusedPaneYRange(State.SplitActive, State.FocusedPane, height);
+        ComposeDialogIntoFrame(frame, State.Dialog, width, dialogHeight, dialogY);
     }
 
     internal static void DrawPaneToLines(Line[] lines, Pane pane, int yOffset, int height, bool focused, bool showOwnPathLine, int width)
@@ -6553,7 +6555,12 @@ static class Program
         }
     }
 
-    static void ComposeDialogIntoFrame(string[] frame, DialogState dialog, int width, int height)
+    // `paneHeight` is the sub-rectangle height to center within (the focused pane's height in
+    // split mode, or the full screen otherwise — see ComputeFocusedPaneYRange). `yOffset` is
+    // added to every absolute row this writes, so the centered box lands inside that
+    // sub-rectangle instead of always starting at the top of the screen. Row-bounds checking
+    // still uses `frame.Length` (the real total frame height), not `paneHeight`.
+    static void ComposeDialogIntoFrame(string[] frame, DialogState dialog, int width, int paneHeight, int yOffset)
     {
         List<string> contentLines = BuildDialogContentLines(dialog);
         int contentWidth = 0;
@@ -6564,23 +6571,23 @@ static class Program
         int titleWidth = CharacterWidth.GetStringWidth(dialog.Title) + 4;
         contentWidth = Math.Max(contentWidth, titleWidth);
 
-        DialogRect rect = DialogLayout.CalcDialogRect(contentWidth, contentLines.Count, width, height);
+        DialogRect rect = DialogLayout.CalcDialogRect(contentWidth, contentLines.Count, width, paneHeight);
         int innerWidth = rect.Width - 2;
         int innerHeight = rect.Height - 2;
 
         string topBorder = BuildTitledTopBorder(dialog.Title, innerWidth);
-        OverwriteFrameRow(frame, rect.Y, rect.X, topBorder, width, height);
+        OverwriteFrameRow(frame, yOffset + rect.Y, rect.X, topBorder, width, frame.Length);
 
         for (int i = 0; i < innerHeight; i++)
         {
             string rowText = i < contentLines.Count ? contentLines[i] : "";
             string rowText2 = FitRowToWidth(rowText, innerWidth);
             string row = "│" + rowText2 + "│";
-            OverwriteFrameRow(frame, rect.Y + 1 + i, rect.X, row, width, height);
+            OverwriteFrameRow(frame, yOffset + rect.Y + 1 + i, rect.X, row, width, frame.Length);
         }
 
         string bottomBorder = "└" + new string('─', innerWidth) + "┘";
-        OverwriteFrameRow(frame, rect.Y + rect.Height - 1, rect.X, bottomBorder, width, height);
+        OverwriteFrameRow(frame, yOffset + rect.Y + rect.Height - 1, rect.X, bottomBorder, width, frame.Length);
     }
 
     // ANSI付きの行を innerWidth ちょうどの表示幅に整形する。切り詰めが必要な行は
