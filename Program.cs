@@ -3005,7 +3005,7 @@ static class Program
         return "/";
     }
 
-    static bool IsWindows()
+    internal static bool IsWindows()
     {
         return System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
             System.Runtime.InteropServices.OSPlatform.Windows);
@@ -4061,6 +4061,60 @@ static class Program
             return entryName.TrimEnd('/') + "\\";
         string combined = Path.Combine(columnPath, entryName.TrimEnd('/'));
         return entryName.EndsWith("/") ? combined + "/" : combined;
+    }
+
+    static readonly char[] WindowsInvalidDirNameChars = { '<', '>', ':', '"', '/', '\\', '|', '?', '*' };
+
+    // Control characters are already rejected by the caller (HandleTextInputDialogKey's
+    // existing `!char.IsControl(key.KeyChar)` guard) before this runs, so this only needs to
+    // cover each platform's printable-character restrictions.
+    internal static bool IsValidDirNameChar(char c)
+    {
+        if (IsWindows())
+            return Array.IndexOf(WindowsInvalidDirNameChars, c) < 0;
+        return c != '/';
+    }
+
+    static readonly HashSet<string> WindowsReservedDirNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+
+    // Checks the Windows-specific rules that can't be caught per-keystroke because they depend
+    // on the whole name: reserved device names (with or without an extension) and a trailing
+    // dot/space (Windows silently strips/rejects these).
+    internal static bool IsInvalidDirectoryName(string name, out string reason)
+    {
+        if (IsWindows())
+        {
+            if (name.EndsWith('.') || name.EndsWith(' '))
+            {
+                reason = "cannot end with a dot or space";
+                return true;
+            }
+            int dotIndex = name.IndexOf('.');
+            string baseName = dotIndex >= 0 ? name.Substring(0, dotIndex) : name;
+            if (WindowsReservedDirNames.Contains(baseName))
+            {
+                reason = "is a reserved name";
+                return true;
+            }
+        }
+        reason = "";
+        return false;
+    }
+
+    internal static bool DirectoryNameCollides(List<string> entries, string name)
+    {
+        foreach (string entry in entries)
+        {
+            string entryName = entry.EndsWith("/") ? entry.Substring(0, entry.Length - 1) : entry;
+            if (string.Equals(entryName, name, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 
     static bool SelectedIsDeletable(Pane pane, out Column col, out string name)
