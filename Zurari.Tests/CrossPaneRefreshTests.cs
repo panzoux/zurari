@@ -1,5 +1,6 @@
 using Xunit;
 
+[Collection("GlobalStateTests")]
 public class CrossPaneRefreshTests
 {
     [Fact]
@@ -25,6 +26,8 @@ public class CrossPaneRefreshTests
             Directory.CreateDirectory(Path.Combine(dir, "NewFolder"));
 
             await Program.RefreshOtherPanesAsync(paneA, dir);
+
+            if (paneB.Columns[0].LoadingTask != null) await paneB.Columns[0].LoadingTask;
 
             Assert.Contains("NewFolder/", paneB.Columns[0].Entries);
         }

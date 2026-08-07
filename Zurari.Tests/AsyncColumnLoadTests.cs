@@ -1,5 +1,6 @@
 using Xunit;
 
+[Collection("GlobalStateTests")]
 public class AsyncColumnLoadTests
 {
     internal static string MakeTempDir(params string[] fileNames)
