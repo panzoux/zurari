@@ -6457,7 +6457,8 @@ static class Program
                 const int MaxFieldWidth = 50;
                 (int start, int end) = TextInputBuffer.ComputeScrollWindow(textInput.Buffer, textInput.CursorPos, MaxFieldWidth - 1);
                 string visible = textInput.Buffer.Substring(start, end - start);
-                int cursorInVisible = textInput.CursorPos - start;
+                int clampedCursorPos = Math.Clamp(textInput.CursorPos, 0, textInput.Buffer.Length);
+                int cursorInVisible = clampedCursorPos - start;
                 string beforeCursor = visible.Substring(0, cursorInVisible);
                 string atAndAfterCursor = visible.Substring(cursorInVisible);
                 // 反転スペースだけだと配色によっては見えにくいため、実体のある全角ブロックを
