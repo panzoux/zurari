@@ -3025,6 +3025,20 @@ static class Program
         return (topHeight, bottomHeight);
     }
 
+    // Y-range of the focused pane's own sub-rectangle within the full screen, so overlays
+    // (currently: the dialog box) can center within the pane the user is looking at instead of
+    // the whole screen when split mode is active. See spec: "Centering within the active pane".
+    internal static (int Y, int Height) ComputeFocusedPaneYRange(bool splitActive, int focusedPane, int screenHeight)
+    {
+        if (!splitActive)
+            return (0, screenHeight);
+
+        (int topHeight, int bottomHeight) = ComputeSplitPaneHeights(screenHeight);
+        if (focusedPane == 0)
+            return (0, topHeight);
+        return (topHeight + 1, bottomHeight);
+    }
+
     // The real height available to `pane` for preview rendering — matches what DrawPaneToLines
     // will actually pass to DrawPreviewToLines as `bodyFrameHeight`, so preview content is
     // rasterized for the space it will actually be drawn into (see ComputeSplitPaneHeights).
