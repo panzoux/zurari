@@ -40,6 +40,32 @@ public class DualPaneTests
         Assert.Equal(6, topHeight);
         Assert.Equal(6, bottomHeight);
     }
+
+    [Fact]
+    public void ComputeFocusedPaneYRange_NotSplit_ReturnsFullScreen()
+    {
+        var (y, height) = Program.ComputeFocusedPaneYRange(splitActive: false, focusedPane: 0, screenHeight: 40);
+        Assert.Equal(0, y);
+        Assert.Equal(40, height);
+    }
+
+    [Fact]
+    public void ComputeFocusedPaneYRange_Split_FocusedUpper_ReturnsTopHalf()
+    {
+        (int topHeight, _) = Program.ComputeSplitPaneHeights(40);
+        var (y, height) = Program.ComputeFocusedPaneYRange(splitActive: true, focusedPane: 0, screenHeight: 40);
+        Assert.Equal(0, y);
+        Assert.Equal(topHeight, height);
+    }
+
+    [Fact]
+    public void ComputeFocusedPaneYRange_Split_FocusedLower_ReturnsBottomHalfWithSeparatorOffset()
+    {
+        (int topHeight, int bottomHeight) = Program.ComputeSplitPaneHeights(40);
+        var (y, height) = Program.ComputeFocusedPaneYRange(splitActive: true, focusedPane: 1, screenHeight: 40);
+        Assert.Equal(topHeight + 1, y);
+        Assert.Equal(bottomHeight, height);
+    }
 }
 
 public class PaneOwnPathLineTests

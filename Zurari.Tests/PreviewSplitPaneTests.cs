@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using Xunit;
 using Xunit.Abstractions;
 
+[Collection("GlobalStateTests")]
 public class PreviewSplitPaneTests
 {
     readonly ITestOutputHelper _out;

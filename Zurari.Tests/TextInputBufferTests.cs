@@ -130,4 +130,57 @@ public class TextInputBufferTests
     {
         Assert.Equal(0, TextInputBuffer.DisplayColumnAtCursor("漢字", 0));
     }
+
+    [Fact]
+    public void ComputeScrollWindow_ShortBuffer_ShowsWholeBufferNoScroll()
+    {
+        var (start, end) = TextInputBuffer.ComputeScrollWindow("short", 3, 50);
+        Assert.Equal(0, start);
+        Assert.Equal(5, end);
+    }
+
+    [Fact]
+    public void ComputeScrollWindow_LongBuffer_CursorAtEnd_RightAlignsWindow()
+    {
+        string buffer = new string('a', 60);
+        var (start, end) = TextInputBuffer.ComputeScrollWindow(buffer, 60, 50);
+        Assert.Equal(10, start);
+        Assert.Equal(60, end);
+    }
+
+    [Fact]
+    public void ComputeScrollWindow_LongBuffer_CursorAtStart_ShowsFromBeginning()
+    {
+        string buffer = new string('a', 60);
+        var (start, end) = TextInputBuffer.ComputeScrollWindow(buffer, 0, 50);
+        Assert.Equal(0, start);
+        Assert.Equal(50, end);
+    }
+
+    [Fact]
+    public void ComputeScrollWindow_LongBuffer_CursorInMiddle_WithinReachOfStart_ShowsFromBeginning()
+    {
+        string buffer = new string('a', 60);
+        var (start, end) = TextInputBuffer.ComputeScrollWindow(buffer, 30, 50);
+        Assert.Equal(0, start);
+        Assert.Equal(50, end);
+    }
+
+    [Fact]
+    public void ComputeScrollWindow_LongBuffer_CursorPastReach_ScrollsRight()
+    {
+        string buffer = new string('a', 60);
+        var (start, end) = TextInputBuffer.ComputeScrollWindow(buffer, 55, 50);
+        Assert.Equal(5, start);
+        Assert.Equal(55, end);
+    }
+
+    [Fact]
+    public void ComputeScrollWindow_CjkDoubleWidthChars_ScrollsByDisplayColumnNotCharIndex()
+    {
+        string buffer = new string('漢', 30); // 30 chars, display width 60 (each char is width 2)
+        var (start, end) = TextInputBuffer.ComputeScrollWindow(buffer, 30, 50);
+        Assert.Equal(5, start);
+        Assert.Equal(30, end);
+    }
 }

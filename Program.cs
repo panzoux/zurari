@@ -1324,9 +1324,17 @@ sealed class ConfirmDialogState : DialogState
 
 sealed class TextInputDialogState : DialogState
 {
+    public const string DefaultHintText = "[Enter]Confirm  [Esc]Cancel";
+
     public string Buffer = "";
     public int CursorPos;
     public Action<string?> OnResult = _ => { }; // null=キャンセル
+    public Func<char, bool>? CharFilter;         // null = accept all (Rename's existing behavior)
+    public string HintText = DefaultHintText;
+    public Func<string, string?>? Validate;      // null = no pre-close check (Rename's existing behavior).
+                                                  // Non-null: run on Enter; a non-null return keeps the
+                                                  // dialog open and shows the message instead of closing.
+    public string? ValidationMessage;            // transient: shown on the blank line below the input field
 }
 
 sealed class ListSelectDialogState : DialogState
@@ -1510,6 +1518,53 @@ static class TextInputBuffer
     {
         int pos = Math.Clamp(cursorPos, 0, buffer.Length);
         return CharacterWidth.GetStringWidth(buffer.Substring(0, pos));
+    }
+
+    // Returns the [Start, End) character-index range of `buffer` that fits within `maxWidth`
+    // display columns while always including `cursorPos`. Used to keep the cursor visible in a
+    // width-capped dialog field instead of letting it scroll off-screen (see spec: "Cursor
+    // visibility & horizontal scrolling").
+    public static (int Start, int End) ComputeScrollWindow(string buffer, int cursorPos, int maxWidth)
+    {
+        int pos = Math.Clamp(cursorPos, 0, buffer.Length);
+        int totalWidth = CharacterWidth.GetStringWidth(buffer);
+        if (totalWidth <= maxWidth)
+            return (0, buffer.Length);
+
+        int cursorCol = CharacterWidth.GetStringWidth(buffer.Substring(0, pos));
+
+        int start;
+        if (cursorCol <= maxWidth)
+        {
+            start = 0;
+        }
+        else
+        {
+            // Right-align: walk backward from the cursor until one more character would
+            // overflow maxWidth.
+            start = pos;
+            int width = 0;
+            while (start > 0)
+            {
+                int w = CharacterWidth.GetStringWidth(buffer[start - 1].ToString());
+                if (width + w > maxWidth) break;
+                width += w;
+                start--;
+            }
+        }
+
+        int startCol = CharacterWidth.GetStringWidth(buffer.Substring(0, start));
+        int end = start;
+        int endCol = startCol;
+        while (end < buffer.Length)
+        {
+            int w = CharacterWidth.GetStringWidth(buffer[end].ToString());
+            if (endCol - startCol + w > maxWidth) break;
+            endCol += w;
+            end++;
+        }
+
+        return (start, end);
     }
 }
 
@@ -2958,7 +3013,7 @@ static class Program
         return "/";
     }
 
-    static bool IsWindows()
+    internal static bool IsWindows()
     {
         return System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
             System.Runtime.InteropServices.OSPlatform.Windows);
@@ -2976,6 +3031,20 @@ static class Program
         int topHeight = available / 2;
         int bottomHeight = available - topHeight; // 端数は下ペインへ
         return (topHeight, bottomHeight);
+    }
+
+    // Y-range of the focused pane's own sub-rectangle within the full screen, so overlays
+    // (currently: the dialog box) can center within the pane the user is looking at instead of
+    // the whole screen when split mode is active. See spec: "Centering within the active pane".
+    internal static (int Y, int Height) ComputeFocusedPaneYRange(bool splitActive, int focusedPane, int screenHeight)
+    {
+        if (!splitActive)
+            return (0, screenHeight);
+
+        (int topHeight, int bottomHeight) = ComputeSplitPaneHeights(screenHeight);
+        if (focusedPane == 0)
+            return (0, topHeight);
+        return (topHeight + 1, bottomHeight);
     }
 
     // The real height available to `pane` for preview rendering — matches what DrawPaneToLines
@@ -3187,6 +3256,11 @@ static class Program
                         CancelPreviewLoad(pane);
                     Draw();
                 }
+                break;
+
+            case ConsoleKey.K:
+                if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
+                    RequestCreateDirectory(pane);
                 break;
 
             case ConsoleKey.L:
@@ -3574,6 +3648,23 @@ static class Program
         }
         if (deepestAffected < 0) deepestAffected = 0;
         await RebuildRightSideAsync(pane, deepestAffected);
+    }
+
+    // Mirrors RefreshAffectedColumnsAsync's job-refresh logic, but for synchronous one-shot
+    // operations (Rename, Create Directory) instead of background jobs. `actingPane` is skipped
+    // deliberately: its active column was already replaced directly by the caller (with its own
+    // RestoreTo-driven cursor placement), and refreshing it again here would clobber that.
+    internal static async Task RefreshOtherPanesAsync(Pane actingPane, string affectedDir)
+    {
+        var affectedDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { affectedDir };
+        foreach (Pane pane in State.Panes)
+        {
+            if (ReferenceEquals(pane, actingPane)) continue;
+            if (!pane.Columns.Exists(c => affectedDirs.Contains(c.Path))) continue;
+
+            if (pane.Leap.Active || pane.Search.Active) { pane.NeedsRefresh = true; continue; }
+            await RefreshPaneNowAsync(pane, affectedDirs);
+        }
     }
 
     static async Task RefreshActiveJobColumnsAsync()
@@ -4002,6 +4093,60 @@ static class Program
         return entryName.EndsWith("/") ? combined + "/" : combined;
     }
 
+    static readonly char[] WindowsInvalidDirNameChars = { '<', '>', ':', '"', '/', '\\', '|', '?', '*' };
+
+    // Control characters are already rejected by the caller (HandleTextInputDialogKey's
+    // existing `!char.IsControl(key.KeyChar)` guard) before this runs, so this only needs to
+    // cover each platform's printable-character restrictions.
+    internal static bool IsValidDirNameChar(char c)
+    {
+        if (IsWindows())
+            return Array.IndexOf(WindowsInvalidDirNameChars, c) < 0;
+        return c != '/';
+    }
+
+    static readonly HashSet<string> WindowsReservedDirNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+
+    // Checks the Windows-specific rules that can't be caught per-keystroke because they depend
+    // on the whole name: reserved device names (with or without an extension) and a trailing
+    // dot/space (Windows silently strips/rejects these).
+    internal static bool IsInvalidDirectoryName(string name, out string reason)
+    {
+        if (IsWindows())
+        {
+            if (name.EndsWith('.') || name.EndsWith(' '))
+            {
+                reason = "cannot end with a dot or space";
+                return true;
+            }
+            int dotIndex = name.IndexOf('.');
+            string baseName = dotIndex >= 0 ? name.Substring(0, dotIndex) : name;
+            if (WindowsReservedDirNames.Contains(baseName))
+            {
+                reason = "is a reserved name";
+                return true;
+            }
+        }
+        reason = "";
+        return false;
+    }
+
+    internal static bool DirectoryNameCollides(List<string> entries, string name)
+    {
+        foreach (string entry in entries)
+        {
+            string entryName = entry.EndsWith("/") ? entry.Substring(0, entry.Length - 1) : entry;
+            if (string.Equals(entryName, name, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
     static bool SelectedIsDeletable(Pane pane, out Column col, out string name)
     {
         col = pane.Columns[pane.ActiveColumn];
@@ -4191,6 +4336,93 @@ static class Program
             MarkHelper.ReconcileAfterReload(refreshed);
             pane.Columns[pane.ActiveColumn] = refreshed;
             await RebuildRightSideAsync(pane, pane.ActiveColumn);
+            await RefreshOtherPanesAsync(pane, col.Path);
+        }
+        else
+        {
+            await RefreshCurrentAsync(pane);
+        }
+    }
+
+    static void RequestCreateDirectory(Pane pane)
+    {
+        Column col = pane.Columns[pane.ActiveColumn];
+        if (col.Path == "::DRIVES::") return;
+
+        ShowTextInput(
+            "Create Directory",
+            "",
+            async nameResult => await ExecuteCreateDirectoryAsync(pane, col, nameResult),
+            charFilter: IsValidDirNameChar,
+            hintText: "[Enter]Create  [Esc]Cancel",
+            validate: name => ValidateNewDirectoryName(col.Entries, name));
+    }
+
+    // Pre-close validation for the Create Directory dialog: null means Enter may proceed
+    // (either a valid name, or an empty one — OnResult's own empty check silently no-ops on
+    // that case rather than showing an error, matching Rename's precedent for empty input).
+    // A non-null return keeps the dialog open with this message instead of closing it, so a
+    // foreseeable failure (bad name, collision) doesn't silently discard the user's intent.
+    internal static string? ValidateNewDirectoryName(List<string> entries, string name)
+    {
+        string trimmed = name.Trim();
+        if (trimmed.Length == 0) return null;
+        if (IsInvalidDirectoryName(trimmed, out string invalidReason))
+            return $"\"{trimmed}\" {invalidReason}";
+        if (DirectoryNameCollides(entries, trimmed))
+            return $"\"{trimmed}\" already exists";
+        return null;
+    }
+
+    // internal: Zurari.Tests から InternalsVisibleTo 経由で直接呼び出すため。
+    internal static async Task ExecuteCreateDirectoryAsync(Pane pane, Column col, string? nameResult)
+    {
+        if (nameResult == null) return; // Esc
+        string name = nameResult.Trim();
+        if (name.Length == 0) return; // silent cancel — same precedent as Rename's empty-name handling
+
+        if (IsInvalidDirectoryName(name, out string invalidReason))
+        {
+            _lastErrorMessage = $"\"{name}\" {invalidReason}";
+            return;
+        }
+
+        if (DirectoryNameCollides(col.Entries, name))
+        {
+            _lastErrorMessage = $"\"{name}\" already exists";
+            return;
+        }
+
+        string fullPath = BuildFullPath(col.Path, name);
+        string result;
+        string message = "";
+
+        try
+        {
+            Directory.CreateDirectory(fullPath);
+            result = "OK";
+            _lastErrorMessage = null;
+        }
+        catch (Exception ex)
+        {
+            result = "FAIL";
+            message = ex.Message;
+            _lastErrorMessage = $"Create failed: {ex.Message}";
+        }
+
+        OperationLog.Append(new OpLogEntry(DateTime.UtcNow, null, "MKDIR", result, fullPath, fullPath, message));
+
+        if (result == "OK")
+        {
+            Column refreshed = await CreateColumnAsync(col.Path);
+            if (refreshed.LoadingTask != null) await refreshed.LoadingTask;
+            refreshed.RestoreTo = name + "/";
+            SeekRestoreTo(refreshed);
+            refreshed.Marked = col.Marked;
+            MarkHelper.ReconcileAfterReload(refreshed);
+            pane.Columns[pane.ActiveColumn] = refreshed;
+            await RebuildRightSideAsync(pane, pane.ActiveColumn);
+            await RefreshOtherPanesAsync(pane, col.Path);
         }
         else
         {
@@ -4894,7 +5126,9 @@ static class Program
         };
     }
 
-    static void ShowTextInput(string title, string initialValue, Action<string?> onResult)
+    static void ShowTextInput(string title, string initialValue, Action<string?> onResult,
+        Func<char, bool>? charFilter = null, string hintText = TextInputDialogState.DefaultHintText,
+        Func<string, string?>? validate = null)
     {
         State.Dialog = new TextInputDialogState
         {
@@ -4902,6 +5136,9 @@ static class Program
             Buffer = initialValue,
             CursorPos = initialValue.Length,
             OnResult = onResult,
+            CharFilter = charFilter,
+            HintText = hintText,
+            Validate = validate,
         };
     }
 
@@ -5100,6 +5337,11 @@ static class Program
 
     static void HandleTextInputDialogKey(TextInputDialogState dialog, ConsoleKeyInfo key)
     {
+        // Cleared on every keystroke; re-set below only if this keystroke itself produces a
+        // new message (a rejected character, or a failed pre-close Validate on Enter) — so a
+        // stale message never lingers once the user starts fixing the problem.
+        dialog.ValidationMessage = null;
+
         if (key.Key == ConsoleKey.Escape)
         {
             CloseTextInputDialog(dialog, null);
@@ -5108,6 +5350,17 @@ static class Program
 
         if (key.Key == ConsoleKey.Enter)
         {
+            if (dialog.Validate != null)
+            {
+                string? error = dialog.Validate(dialog.Buffer);
+                if (error != null)
+                {
+                    // The user's create/rename intent hasn't been satisfied yet — keep the
+                    // dialog open so they can fix the name, rather than silently closing it.
+                    dialog.ValidationMessage = error;
+                    return;
+                }
+            }
             CloseTextInputDialog(dialog, dialog.Buffer);
             return;
         }
@@ -5148,12 +5401,27 @@ static class Program
             return;
         }
 
+        if (key.Key == ConsoleKey.U && (key.Modifiers & ConsoleModifiers.Control) != 0)
+        {
+            dialog.Buffer = "";
+            dialog.CursorPos = 0;
+            return;
+        }
+
         // 文字受け取り: HandleSearchKeyAsync と同一の判定(制御文字を除外)。
         // IME確定文字・サロゲートペアもここを通り、TextInputBuffer.Insert が
         // string.Insert で正しく結合する(Program.cs の HandleSearchKeyAsync 実装を参照)。
         if (!char.IsControl(key.KeyChar))
         {
-            (dialog.Buffer, dialog.CursorPos) = TextInputBuffer.Insert(dialog.Buffer, dialog.CursorPos, key.KeyChar);
+            if (dialog.CharFilter == null || dialog.CharFilter(key.KeyChar))
+            {
+                (dialog.Buffer, dialog.CursorPos) = TextInputBuffer.Insert(dialog.Buffer, dialog.CursorPos, key.KeyChar);
+                return;
+            }
+
+            // Rejected by CharFilter: give visible feedback instead of silently doing nothing,
+            // which otherwise reads as the app being unresponsive.
+            dialog.ValidationMessage = $"invalid char \"{key.KeyChar}\"";
             return;
         }
 
@@ -5901,7 +6169,9 @@ static class Program
     static void DrawDialogOverlay(string[] frame, int width, int height)
     {
         if (State.Dialog == null) return;
-        ComposeDialogIntoFrame(frame, State.Dialog, width, height);
+
+        (int dialogY, int dialogHeight) = ComputeFocusedPaneYRange(State.SplitActive, State.FocusedPane, height);
+        ComposeDialogIntoFrame(frame, State.Dialog, width, dialogHeight, dialogY);
     }
 
     internal static void DrawPaneToLines(Line[] lines, Pane pane, int yOffset, int height, bool focused, bool showOwnPathLine, int width)
@@ -6320,16 +6590,44 @@ static class Program
 
             case TextInputDialogState textInput:
             {
-                string beforeCursor = textInput.Buffer.Substring(0, textInput.CursorPos);
-                string atAndAfterCursor = textInput.Buffer.Substring(textInput.CursorPos);
-                // 反転スペースだけだと配色によっては見えにくいため、実体のある全角ブロックを
-                // 反転表示することで、入力欄であることとカーソル位置の両方を分かりやすくする。
-                string displayLine = beforeCursor + "\x1b[7m█\x1b[0m" + atAndAfterCursor;
+                // Cap the field at a fixed width and scroll so the cursor is always visible,
+                // instead of letting the dialog grow to the buffer's full width and truncating
+                // (which used to silently drop the cursor marker on long input — see spec:
+                // "Cursor visibility & horizontal scrolling"). -1 reserves a column for the
+                // rare case where the cursor sits past the last character (end of buffer) and
+                // an extra cell is needed to show it — see below.
+                const int MaxFieldWidth = 50;
+                (int start, int end) = TextInputBuffer.ComputeScrollWindow(textInput.Buffer, textInput.CursorPos, MaxFieldWidth - 1);
+                string visible = textInput.Buffer.Substring(start, end - start);
+                int clampedCursorPos = Math.Clamp(textInput.CursorPos, 0, textInput.Buffer.Length);
+                int cursorInVisible = clampedCursorPos - start;
+                string beforeCursor = visible.Substring(0, cursorInVisible);
+                string atCursorAndAfter = visible.Substring(cursorInVisible);
+                // カーソル位置の文字そのものを反転表示する(挿入モードの実体カーソルとして
+                // 見せるため)。以前は反転ブロックを別セルとして文字の間に挿入していたため、
+                // 前後の文字との間に余分な1マス分の隙間があるように見えてしまっていた。
+                // カーソルが末尾(次に文字がない)の場合のみ、反転させる文字がないので
+                // 全角ブロックを1マス追加して位置を示す。
+                string displayLine;
+                if (atCursorAndAfter.Length > 0)
+                {
+                    string charAtCursor = atCursorAndAfter.Substring(0, 1);
+                    string afterCursor = atCursorAndAfter.Substring(1);
+                    displayLine = beforeCursor + "\x1b[7m" + charAtCursor + "\x1b[0m" + afterCursor;
+                }
+                else
+                {
+                    // No character to invert here — and inverting the block glyph itself would
+                    // be counterproductive: █ already fills the cell with the foreground color,
+                    // so swapping fg/bg via SGR-7 makes it render in the *background* color
+                    // instead, vanishing on a typical dark-background terminal. Draw it plain.
+                    displayLine = beforeCursor + "█";
+                }
                 return new List<string>
                 {
                     displayLine,
-                    "",
-                    "[Enter]Confirm  [Esc]Cancel",
+                    textInput.ValidationMessage ?? "",
+                    textInput.HintText,
                 };
             }
 
@@ -6414,7 +6712,12 @@ static class Program
         }
     }
 
-    static void ComposeDialogIntoFrame(string[] frame, DialogState dialog, int width, int height)
+    // `paneHeight` is the sub-rectangle height to center within (the focused pane's height in
+    // split mode, or the full screen otherwise — see ComputeFocusedPaneYRange). `yOffset` is
+    // added to every absolute row this writes, so the centered box lands inside that
+    // sub-rectangle instead of always starting at the top of the screen. Row-bounds checking
+    // still uses `frame.Length` (the real total frame height), not `paneHeight`.
+    static void ComposeDialogIntoFrame(string[] frame, DialogState dialog, int width, int paneHeight, int yOffset)
     {
         List<string> contentLines = BuildDialogContentLines(dialog);
         int contentWidth = 0;
@@ -6425,35 +6728,39 @@ static class Program
         int titleWidth = CharacterWidth.GetStringWidth(dialog.Title) + 4;
         contentWidth = Math.Max(contentWidth, titleWidth);
 
-        DialogRect rect = DialogLayout.CalcDialogRect(contentWidth, contentLines.Count, width, height);
+        DialogRect rect = DialogLayout.CalcDialogRect(contentWidth, contentLines.Count, width, paneHeight);
         int innerWidth = rect.Width - 2;
         int innerHeight = rect.Height - 2;
 
         string topBorder = BuildTitledTopBorder(dialog.Title, innerWidth);
-        OverwriteFrameRow(frame, rect.Y, rect.X, topBorder, width, height);
+        OverwriteFrameRow(frame, yOffset + rect.Y, rect.X, topBorder, width, frame.Length);
 
         for (int i = 0; i < innerHeight; i++)
         {
             string rowText = i < contentLines.Count ? contentLines[i] : "";
             string rowText2 = FitRowToWidth(rowText, innerWidth);
             string row = "│" + rowText2 + "│";
-            OverwriteFrameRow(frame, rect.Y + 1 + i, rect.X, row, width, height);
+            OverwriteFrameRow(frame, yOffset + rect.Y + 1 + i, rect.X, row, width, frame.Length);
         }
 
         string bottomBorder = "└" + new string('─', innerWidth) + "┘";
-        OverwriteFrameRow(frame, rect.Y + rect.Height - 1, rect.X, bottomBorder, width, height);
+        OverwriteFrameRow(frame, yOffset + rect.Y + rect.Height - 1, rect.X, bottomBorder, width, frame.Length);
     }
 
     // ANSI付きの行を innerWidth ちょうどの表示幅に整形する。切り詰めが必要な行は
     // ANSI装飾を落としてプレーンテキストで切り詰め・パディングする(既存のステータスバー実装と
     // 同水準の割り切り。補足はTask 8.1参照)。
-    static string FitRowToWidth(string rowText, int innerWidth)
+    // internal: Zurari.Tests から InternalsVisibleTo 経由で直接呼び出すため。
+    internal static string FitRowToWidth(string rowText, int innerWidth)
     {
         string plain = StripAnsiForWidth(rowText);
         int plainWidth = CharacterWidth.GetStringWidth(plain);
-        if (plainWidth <= innerWidth && plain.Length == rowText.Length)
+        if (plainWidth <= innerWidth)
         {
-            // ANSIを含まない、かつ幅に収まる行はそのままパディングして返す。
+            // 幅に収まる行はそのままパディングして返す。以前は「ANSIを含まない」行だけこの
+            // 経路を通す判定になっており、幅に収まっているのに ANSI を含むだけで下の
+            // truncated 経路(plain ベース、ANSI 情報を持たない)に落ちて SGR が常に失われて
+            // いた(カーソルの反転表示・選択行のハイライトが画面に出ない不具合の原因)。
             return rowText + new string(' ', innerWidth - plainWidth);
         }
         string truncated = CharacterWidth.SmartTruncate(plain, innerWidth);
