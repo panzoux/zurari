@@ -27,9 +27,9 @@ public class CrossPaneRefreshTests
 
             await Program.RefreshOtherPanesAsync(paneA, dir);
 
-            if (paneB.Columns[0].LoadingTask != null) await paneB.Columns[0].LoadingTask;
-
-            Assert.Contains("NewFolder/", paneB.Columns[0].Entries);
+            Column refreshedB = paneB.Columns[0];
+            if (refreshedB.LoadingTask != null) await refreshedB.LoadingTask;
+            Assert.Contains("NewFolder/", refreshedB.Entries);
         }
         finally
         {
