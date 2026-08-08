@@ -1,5 +1,6 @@
 using Xunit;
 
+[Collection("GlobalStateTests")]
 public class ViewportRenderingTests
 {
     static Column MakeColumn(int entryCount, int selected = 0)
