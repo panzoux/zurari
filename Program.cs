@@ -1331,6 +1331,10 @@ sealed class TextInputDialogState : DialogState
     public Action<string?> OnResult = _ => { }; // null=キャンセル
     public Func<char, bool>? CharFilter;         // null = accept all (Rename's existing behavior)
     public string HintText = DefaultHintText;
+    public Func<string, string?>? Validate;      // null = no pre-close check (Rename's existing behavior).
+                                                  // Non-null: run on Enter; a non-null return keeps the
+                                                  // dialog open and shows the message instead of closing.
+    public string? ValidationMessage;            // transient: shown on the blank line below the input field
 }
 
 sealed class ListSelectDialogState : DialogState
@@ -4346,11 +4350,28 @@ static class Program
         if (col.Path == "::DRIVES::") return;
 
         ShowTextInput(
-            "New Folder",
+            "Create Directory",
             "",
             async nameResult => await ExecuteCreateDirectoryAsync(pane, col, nameResult),
             charFilter: IsValidDirNameChar,
-            hintText: "[Enter]Create  [Esc]Cancel");
+            hintText: "[Enter]Create  [Esc]Cancel",
+            validate: name => ValidateNewDirectoryName(col.Entries, name));
+    }
+
+    // Pre-close validation for the Create Directory dialog: null means Enter may proceed
+    // (either a valid name, or an empty one — OnResult's own empty check silently no-ops on
+    // that case rather than showing an error, matching Rename's precedent for empty input).
+    // A non-null return keeps the dialog open with this message instead of closing it, so a
+    // foreseeable failure (bad name, collision) doesn't silently discard the user's intent.
+    internal static string? ValidateNewDirectoryName(List<string> entries, string name)
+    {
+        string trimmed = name.Trim();
+        if (trimmed.Length == 0) return null;
+        if (IsInvalidDirectoryName(trimmed, out string invalidReason))
+            return $"\"{trimmed}\" {invalidReason}";
+        if (DirectoryNameCollides(entries, trimmed))
+            return $"\"{trimmed}\" already exists";
+        return null;
     }
 
     // internal: Zurari.Tests から InternalsVisibleTo 経由で直接呼び出すため。
@@ -5106,7 +5127,8 @@ static class Program
     }
 
     static void ShowTextInput(string title, string initialValue, Action<string?> onResult,
-        Func<char, bool>? charFilter = null, string hintText = TextInputDialogState.DefaultHintText)
+        Func<char, bool>? charFilter = null, string hintText = TextInputDialogState.DefaultHintText,
+        Func<string, string?>? validate = null)
     {
         State.Dialog = new TextInputDialogState
         {
@@ -5116,6 +5138,7 @@ static class Program
             OnResult = onResult,
             CharFilter = charFilter,
             HintText = hintText,
+            Validate = validate,
         };
     }
 
@@ -5314,6 +5337,11 @@ static class Program
 
     static void HandleTextInputDialogKey(TextInputDialogState dialog, ConsoleKeyInfo key)
     {
+        // Cleared on every keystroke; re-set below only if this keystroke itself produces a
+        // new message (a rejected character, or a failed pre-close Validate on Enter) — so a
+        // stale message never lingers once the user starts fixing the problem.
+        dialog.ValidationMessage = null;
+
         if (key.Key == ConsoleKey.Escape)
         {
             CloseTextInputDialog(dialog, null);
@@ -5322,6 +5350,17 @@ static class Program
 
         if (key.Key == ConsoleKey.Enter)
         {
+            if (dialog.Validate != null)
+            {
+                string? error = dialog.Validate(dialog.Buffer);
+                if (error != null)
+                {
+                    // The user's create/rename intent hasn't been satisfied yet — keep the
+                    // dialog open so they can fix the name, rather than silently closing it.
+                    dialog.ValidationMessage = error;
+                    return;
+                }
+            }
             CloseTextInputDialog(dialog, dialog.Buffer);
             return;
         }
@@ -5372,9 +5411,17 @@ static class Program
         // 文字受け取り: HandleSearchKeyAsync と同一の判定(制御文字を除外)。
         // IME確定文字・サロゲートペアもここを通り、TextInputBuffer.Insert が
         // string.Insert で正しく結合する(Program.cs の HandleSearchKeyAsync 実装を参照)。
-        if (!char.IsControl(key.KeyChar) && (dialog.CharFilter == null || dialog.CharFilter(key.KeyChar)))
+        if (!char.IsControl(key.KeyChar))
         {
-            (dialog.Buffer, dialog.CursorPos) = TextInputBuffer.Insert(dialog.Buffer, dialog.CursorPos, key.KeyChar);
+            if (dialog.CharFilter == null || dialog.CharFilter(key.KeyChar))
+            {
+                (dialog.Buffer, dialog.CursorPos) = TextInputBuffer.Insert(dialog.Buffer, dialog.CursorPos, key.KeyChar);
+                return;
+            }
+
+            // Rejected by CharFilter: give visible feedback instead of silently doing nothing,
+            // which otherwise reads as the app being unresponsive.
+            dialog.ValidationMessage = $"invalid char \"{key.KeyChar}\"";
             return;
         }
 
@@ -6561,7 +6608,7 @@ static class Program
                 return new List<string>
                 {
                     displayLine,
-                    "",
+                    textInput.ValidationMessage ?? "",
                     textInput.HintText,
                 };
             }

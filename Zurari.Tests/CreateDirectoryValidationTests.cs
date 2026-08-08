@@ -93,4 +93,34 @@ public class CreateDirectoryValidationTests
         var entries = new List<string> { "a.txt", "Sub/" };
         Assert.False(Program.DirectoryNameCollides(entries, "NewFolder"));
     }
+
+    [Fact]
+    public void ValidateNewDirectoryName_EmptyOrWhitespace_ReturnsNull()
+    {
+        Assert.Null(Program.ValidateNewDirectoryName(new List<string>(), "   "));
+    }
+
+    [Fact]
+    public void ValidateNewDirectoryName_ValidName_ReturnsNull()
+    {
+        Assert.Null(Program.ValidateNewDirectoryName(new List<string>(), "NewFolder"));
+    }
+
+    [Fact]
+    public void ValidateNewDirectoryName_Collision_ReturnsMessageMentioningName()
+    {
+        var entries = new List<string> { "Sub/" };
+        string? result = Program.ValidateNewDirectoryName(entries, "Sub");
+        Assert.NotNull(result);
+        Assert.Contains("Sub", result);
+    }
+
+    [Fact]
+    public void ValidateNewDirectoryName_ReservedName_ReturnsMessageMentioningName_OnWindows()
+    {
+        if (!Program.IsWindows()) return;
+        string? result = Program.ValidateNewDirectoryName(new List<string>(), "CON");
+        Assert.NotNull(result);
+        Assert.Contains("CON", result);
+    }
 }
