@@ -6594,17 +6594,31 @@ static class Program
                 // instead of letting the dialog grow to the buffer's full width and truncating
                 // (which used to silently drop the cursor marker on long input — see spec:
                 // "Cursor visibility & horizontal scrolling"). -1 reserves a column for the
-                // cursor marker itself, which is inserted after slicing.
+                // rare case where the cursor sits past the last character (end of buffer) and
+                // an extra cell is needed to show it — see below.
                 const int MaxFieldWidth = 50;
                 (int start, int end) = TextInputBuffer.ComputeScrollWindow(textInput.Buffer, textInput.CursorPos, MaxFieldWidth - 1);
                 string visible = textInput.Buffer.Substring(start, end - start);
                 int clampedCursorPos = Math.Clamp(textInput.CursorPos, 0, textInput.Buffer.Length);
                 int cursorInVisible = clampedCursorPos - start;
                 string beforeCursor = visible.Substring(0, cursorInVisible);
-                string atAndAfterCursor = visible.Substring(cursorInVisible);
-                // 反転スペースだけだと配色によっては見えにくいため、実体のある全角ブロックを
-                // 反転表示することで、入力欄であることとカーソル位置の両方を分かりやすくする。
-                string displayLine = beforeCursor + "\x1b[7m█\x1b[0m" + atAndAfterCursor;
+                string atCursorAndAfter = visible.Substring(cursorInVisible);
+                // カーソル位置の文字そのものを反転表示する(挿入モードの実体カーソルとして
+                // 見せるため)。以前は反転ブロックを別セルとして文字の間に挿入していたため、
+                // 前後の文字との間に余分な1マス分の隙間があるように見えてしまっていた。
+                // カーソルが末尾(次に文字がない)の場合のみ、反転させる文字がないので
+                // 全角ブロックを1マス追加して位置を示す。
+                string displayLine;
+                if (atCursorAndAfter.Length > 0)
+                {
+                    string charAtCursor = atCursorAndAfter.Substring(0, 1);
+                    string afterCursor = atCursorAndAfter.Substring(1);
+                    displayLine = beforeCursor + "\x1b[7m" + charAtCursor + "\x1b[0m" + afterCursor;
+                }
+                else
+                {
+                    displayLine = beforeCursor + "\x1b[7m█\x1b[0m";
+                }
                 return new List<string>
                 {
                     displayLine,
