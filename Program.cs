@@ -3254,6 +3254,11 @@ static class Program
                 }
                 break;
 
+            case ConsoleKey.K:
+                if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
+                    RequestCreateDirectory(pane);
+                break;
+
             case ConsoleKey.L:
                 if ((key.Modifiers & ConsoleModifiers.Control) != 0)
                 {
@@ -4322,6 +4327,75 @@ static class Program
             Column refreshed = await CreateColumnAsync(col.Path);
             if (refreshed.LoadingTask != null) await refreshed.LoadingTask;
             refreshed.RestoreTo = isDir ? newName + "/" : newName;
+            SeekRestoreTo(refreshed);
+            refreshed.Marked = col.Marked;
+            MarkHelper.ReconcileAfterReload(refreshed);
+            pane.Columns[pane.ActiveColumn] = refreshed;
+            await RebuildRightSideAsync(pane, pane.ActiveColumn);
+            await RefreshOtherPanesAsync(pane, col.Path);
+        }
+        else
+        {
+            await RefreshCurrentAsync(pane);
+        }
+    }
+
+    static void RequestCreateDirectory(Pane pane)
+    {
+        Column col = pane.Columns[pane.ActiveColumn];
+        if (col.Path == "::DRIVES::") return;
+
+        ShowTextInput(
+            "New Folder",
+            "",
+            async nameResult => await ExecuteCreateDirectoryAsync(pane, col, nameResult),
+            charFilter: IsValidDirNameChar,
+            hintText: "[Enter]Create  [Esc]Cancel");
+    }
+
+    // internal: Zurari.Tests から InternalsVisibleTo 経由で直接呼び出すため。
+    internal static async Task ExecuteCreateDirectoryAsync(Pane pane, Column col, string? nameResult)
+    {
+        if (nameResult == null) return; // Esc
+        string name = nameResult.Trim();
+        if (name.Length == 0) return; // silent cancel — same precedent as Rename's empty-name handling
+
+        if (IsInvalidDirectoryName(name, out string invalidReason))
+        {
+            _lastErrorMessage = $"\"{name}\" {invalidReason}";
+            return;
+        }
+
+        if (DirectoryNameCollides(col.Entries, name))
+        {
+            _lastErrorMessage = $"\"{name}\" already exists";
+            return;
+        }
+
+        string fullPath = BuildFullPath(col.Path, name);
+        string result;
+        string message = "";
+
+        try
+        {
+            Directory.CreateDirectory(fullPath);
+            result = "OK";
+            _lastErrorMessage = null;
+        }
+        catch (Exception ex)
+        {
+            result = "FAIL";
+            message = ex.Message;
+            _lastErrorMessage = $"Create failed: {ex.Message}";
+        }
+
+        OperationLog.Append(new OpLogEntry(DateTime.UtcNow, null, "MKDIR", result, fullPath, fullPath, message));
+
+        if (result == "OK")
+        {
+            Column refreshed = await CreateColumnAsync(col.Path);
+            if (refreshed.LoadingTask != null) await refreshed.LoadingTask;
+            refreshed.RestoreTo = name + "/";
             SeekRestoreTo(refreshed);
             refreshed.Marked = col.Marked;
             MarkHelper.ReconcileAfterReload(refreshed);
