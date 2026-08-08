@@ -6746,13 +6746,17 @@ static class Program
     // ANSI付きの行を innerWidth ちょうどの表示幅に整形する。切り詰めが必要な行は
     // ANSI装飾を落としてプレーンテキストで切り詰め・パディングする(既存のステータスバー実装と
     // 同水準の割り切り。補足はTask 8.1参照)。
-    static string FitRowToWidth(string rowText, int innerWidth)
+    // internal: Zurari.Tests から InternalsVisibleTo 経由で直接呼び出すため。
+    internal static string FitRowToWidth(string rowText, int innerWidth)
     {
         string plain = StripAnsiForWidth(rowText);
         int plainWidth = CharacterWidth.GetStringWidth(plain);
-        if (plainWidth <= innerWidth && plain.Length == rowText.Length)
+        if (plainWidth <= innerWidth)
         {
-            // ANSIを含まない、かつ幅に収まる行はそのままパディングして返す。
+            // 幅に収まる行はそのままパディングして返す。以前は「ANSIを含まない」行だけこの
+            // 経路を通す判定になっており、幅に収まっているのに ANSI を含むだけで下の
+            // truncated 経路(plain ベース、ANSI 情報を持たない)に落ちて SGR が常に失われて
+            // いた(カーソルの反転表示・選択行のハイライトが画面に出ない不具合の原因)。
             return rowText + new string(' ', innerWidth - plainWidth);
         }
         string truncated = CharacterWidth.SmartTruncate(plain, innerWidth);
