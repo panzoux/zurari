@@ -6617,7 +6617,11 @@ static class Program
                 }
                 else
                 {
-                    displayLine = beforeCursor + "\x1b[7m█\x1b[0m";
+                    // No character to invert here — and inverting the block glyph itself would
+                    // be counterproductive: █ already fills the cell with the foreground color,
+                    // so swapping fg/bg via SGR-7 makes it render in the *background* color
+                    // instead, vanishing on a typical dark-background terminal. Draw it plain.
+                    displayLine = beforeCursor + "█";
                 }
                 return new List<string>
                 {
