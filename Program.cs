@@ -2934,6 +2934,7 @@ static class Program
                             await ProcessPendingNavigationAsync(p);
                             await ExtendRightSideIfReadyAsync(p);
                             ProcessPendingMarkReconciles(p);
+                            await RecoverStaleLeapFilterAsync(p);
                         }
                     }
                     System.Threading.Thread.Sleep(50);
@@ -4954,6 +4955,26 @@ static class Program
         if (ac.Entries.Count > 0 && ac.Selected < ac.Entries.Count
             && ac.Entries[ac.Selected].EndsWith("/"))
             await EnterDirInLeapAsync(pane);
+    }
+
+    // ApplyLeapFilter can run against a column whose directory read is still in flight
+    // (CreateColumnAsync loads entries on a background Task.Run and returns immediately),
+    // freezing VisibleIndices empty. Nothing else re-applies the filter once the load lands,
+    // so without this the column stays blank forever unless another keystroke happens to
+    // re-trigger the debounce path first. Empty-filter ApplyLeapFilter always clears NoMatch,
+    // so a lingering empty VisibleIndices on a now-loaded column is an unambiguous staleness signal.
+    static async Task RecoverStaleLeapFilterAsync(Pane pane)
+    {
+        if (!pane.Leap.Active) return;
+        if (pane.ActiveColumn >= pane.Columns.Count) return;
+        Column ac = pane.Columns[pane.ActiveColumn];
+        if (ac.IsLoading || ac.Entries.Count == 0) return;
+        if (pane.Leap.VisibleIndices.Count != 0 || pane.Leap.NoMatch) return;
+
+        ApplyLeapFilter(pane);
+        await TryLeapAutoEnterAsync(pane);
+        await RebuildRightSideAsync(pane, pane.ActiveColumn);
+        _redrawGate.Request();
     }
 
     static async Task LeapStepUpAsync(Pane pane)
