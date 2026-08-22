@@ -4817,24 +4817,9 @@ static class Program
             return;
         }
 
-        // Enter: navigate into dir or open file
-        if (key.Key == ConsoleKey.Enter)
-        {
-            if (col.Entries.Count == 0) return;
-            string name = col.Entries[col.Selected];
-            if (name.EndsWith("/"))
-                await EnterDirInLeapAsync(pane);
-            else
-            {
-                string filePath = GetCurrentFullPath(pane);
-                await ExitLeapModeAsync(pane, restoreCursor: false);
-                await LaunchFileAsync(filePath);
-            }
-            return;
-        }
-
-        // Right: enter dir or select file (no open)
-        if (key.Key == ConsoleKey.RightArrow)
+        // Enter / Right: enter dir, or select file and exit leap (no open — leap is for
+        // navigating, not launching; use Ctrl+Enter or exit leap first to open a file)
+        if (key.Key == ConsoleKey.Enter || key.Key == ConsoleKey.RightArrow)
         {
             if (col.Entries.Count == 0) return;
             string name = col.Entries[col.Selected];

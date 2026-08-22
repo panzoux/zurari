@@ -146,7 +146,7 @@ Results from all three tiers are unioned — all matching entries from all tiers
 | `←` (Left) | Go to parent directory. Strips local filter + `/` from buffer in one action (e.g. `mapm/we` → `mapm`). Equivalent to `Parent()` but with buffer bookkeeping. |
 | `↑` / `↓` | Move cursor among **visible** (filtered) entries only. |
 | `Ctrl+P` / `Ctrl+N` | Same as `↑` / `↓` (Emacs/readline style). |
-| `Enter` | **Directory**: same as `→`. **File**: open file via `OpenFileAsync()`, exit leap mode. |
+| `Enter` | Same as `→` in every case, including **File** (pin cursor, exit leap, no open) — leap is for navigating, not launching. |
 | `Esc` | Cancel leap. Cursor and directory restored to pre-leap state (same pattern as `ExitSearchMode(restoreCursor: true)`). |
 | `F3` | Exit leap. Cursor stays on current item (same pattern as `ExitSearchMode(restoreCursor: false)`). |
 | `Ctrl+U` | Clear local filter (everything after last `/`). Stay in current directory; all entries shown. |
