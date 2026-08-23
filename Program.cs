@@ -1018,6 +1018,11 @@ sealed class Column
     public DateTime CachedTime;
     public HashSet<string> Marked;
 
+    // 表示幅(セル数)。Shift+←/→ でカーソル位置のカラムだけを伸縮させる。
+    // カラムは carousel 的に作り直されるため、値そのものは Pane 側の
+    // WidthMemory (path→width) から復元される。
+    public int Width = Program.DefaultColumnWidth;
+
     // Loading state for async operations
     public bool IsLoading { get; set; }
     public int EntriesRead { get; set; }
@@ -1052,6 +1057,12 @@ sealed class Pane
     public bool NeedsRefresh; // ジョブ完了時の遅延再読込用 dirty フラグ(Phase 7 で使用)
     public bool NavRebuildPending; // cursor moved but right-side rebuild deferred to idle tick (Phase 9)
     public DateTime LastNavigationTime = DateTime.MinValue;
+
+    // path → 表示幅の記憶(LRU)。_cursorMemory と同じ作りだが、上下ペインで
+    // 別々の幅を持てるよう static ではなく Pane ごとに持つ。同じディレクトリを
+    // 両ペインで開いても幅は独立し、揃えたいときだけ Shift+Y で明示的に同期する。
+    public readonly Dictionary<string, int> WidthMemory = new(StringComparer.OrdinalIgnoreCase);
+    public readonly List<string> WidthMemoryKeys = new();
 }
 
 sealed class ScreenState
@@ -2805,7 +2816,12 @@ internal static class PreviewLoader
 
 static class Program
 {
-    const int ColumnWidth = 32;
+    // Fallback width for a column that has never been resized, and the reserve/minimum
+    // handed to the preview pane (which is not a Column and has no width of its own).
+    internal const int DefaultColumnWidth = 32;
+    // Floor for a resized column: 2-char prefix + separator + a readable name fragment.
+    internal const int MinColumnWidth = 10;
+    internal const int ColumnWidthStep = 2;
     const int CacheExpireMs = 2000;
     const int MaxPathLength = 100;
     const int NavigationDebounceMs = 300;
@@ -3024,6 +3040,32 @@ static class Program
     internal static int SafeWindowWidth()  { try { return Console.WindowWidth; }  catch { return 120; } }
     internal static int SafeWindowHeight() { try { return Console.WindowHeight; } catch { return 30; } }
 
+    // カラム幅が可変になったため「何カラム入るか = 画面幅 / ColumnWidth」は成り立たない。
+    // 描画ループ(DrawPaneToLines)とプレビュー幅計算(StartPreviewLoad)が同じ規則を使うよう、
+    // 「次の可視カラムに割り当てる実効幅」をここに一本化する。0 はもう入らないことを表す。
+    // 先頭の可視カラムだけは残り幅に切り詰めてでも必ず描く(端末縮小や過大なリサイズ後に
+    // ペインが真っ白になるのを防ぐ)。
+    internal static int NextColumnWidth(Pane pane, int index, int remaining, bool isFirstVisible)
+    {
+        int desired = pane.Columns[index].Width;
+        if (desired <= remaining) return desired;
+        if (!isFirstVisible) return 0;
+        return remaining >= MinColumnWidth ? remaining : 0;
+    }
+
+    // Total display width the visible columns occupy within `limit`, using the rule above.
+    internal static int ComputeDrawnColumnsWidth(Pane pane, int limit)
+    {
+        int used = 0;
+        for (int i = pane.HorizontalScroll; i < pane.Columns.Count; i++)
+        {
+            int cw = NextColumnWidth(pane, i, limit - used, i == pane.HorizontalScroll);
+            if (cw <= 0) break;
+            used += cw;
+        }
+        return used;
+    }
+
     // Shared by BuildFrame (drawing) and StartPreviewLoad (canvas sizing) so a pane's actual
     // available height can never drift between what gets drawn and what gets rasterized.
     internal static (int Top, int Bottom) ComputeSplitPaneHeights(int consoleHeight)
@@ -3159,10 +3201,8 @@ static class Program
         var cts = new CancellationTokenSource();
         pane.Preview.Cts = cts;
         int termWidth = SafeWindowWidth();
-        int drawnCols = 0;
-        for (int i = pane.HorizontalScroll; i < pane.Columns.Count && (drawnCols + 1) * ColumnWidth <= termWidth; i++)
-            drawnCols++;
-        int width = Math.Max(ColumnWidth, termWidth - drawnCols * ColumnWidth);
+        int drawnColumnsWidth = ComputeDrawnColumnsWidth(pane, termWidth);
+        int width = Math.Max(DefaultColumnWidth, termWidth - drawnColumnsWidth);
         int height = ComputePaneBodyFrameHeight(pane);
 
         _ = Task.Run(async () =>
@@ -3222,11 +3262,17 @@ static class Program
                 break;
 
             case ConsoleKey.LeftArrow:
-                MoveLeft(pane);
+                if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
+                    ResizeActiveColumn(pane, -ColumnWidthStep);
+                else
+                    MoveLeft(pane);
                 break;
 
             case ConsoleKey.RightArrow:
-                await MoveRightAsync(pane);
+                if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
+                    ResizeActiveColumn(pane, +ColumnWidthStep);
+                else
+                    await MoveRightAsync(pane);
                 break;
 
             case ConsoleKey.Enter:
@@ -3283,6 +3329,18 @@ static class Program
                 {
                     ShowJobList();
                 }
+                break;
+
+            case ConsoleKey.Y:
+                if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
+                    SyncColumnWidthsToOtherPane();
+                break;
+
+            case ConsoleKey.O:
+                if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
+                    SwapPanes();
+                else if (key.Modifiers == ConsoleModifiers.None)
+                    await SyncPaneToOtherPathAsync(pane);
                 break;
 
             case ConsoleKey.W:
@@ -3632,6 +3690,7 @@ static class Program
 
             SaveCursorMemory(current);
             Column refreshed = await CreateColumnAsync(current.Path);
+            refreshed.Width = current.Width;
             refreshed.Marked = current.Marked;
             if (refreshed.LoadingTask != null)
             {
@@ -3956,6 +4015,7 @@ static class Program
             Column col = pane.Columns[pane.Columns.Count - 1];
             col.ReadCts?.Cancel();
             SaveCursorMemory(col);
+            SaveColumnWidth(pane, col);
             pane.Columns.RemoveAt(pane.Columns.Count - 1);
         }
     }
@@ -4036,16 +4096,29 @@ static class Program
         return available >= MinPaneHeight * 2;
     }
 
-    static void UpdateHorizontalScroll(Pane pane)
+    internal static void UpdateHorizontalScroll(Pane pane)
     {
         bool previewTakesSlot = pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane);
-        int visibleColumns = Math.Max(1, SafeWindowWidth() / ColumnWidth - (previewTakesSlot ? 1 : 0));
+
+        // カラム幅が可変なので「入る本数」ではなく残り幅を数える。プレビューは Column ではない
+        // ため、その取り分は既定幅で見積もる。
+        int budget = SafeWindowWidth() - (previewTakesSlot ? DefaultColumnWidth : 0);
 
         // Only reserve a right-column slot when on a directory — files never expand rightward,
         // and the old dir column may still be in Columns during async rebuild.
         bool hasRightColumn = !previewTakesSlot && pane.Columns.Count > pane.ActiveColumn + 1;
-        int rightReserve = hasRightColumn ? 1 : 0;
-        int minHS = Math.Max(0, pane.ActiveColumn - visibleColumns + 1 + rightReserve);
+        if (hasRightColumn)
+            budget -= pane.Columns[pane.ActiveColumn + 1].Width;
+
+        // アクティブカラムから左へ幅を足していき、予算を超えた時点で止める。
+        int minHS = pane.ActiveColumn;
+        int used = 0;
+        for (int i = pane.ActiveColumn; i >= 0; i--)
+        {
+            used += pane.Columns[i].Width;
+            if (used > budget) break;
+            minHS = i;
+        }
         // maxHS = AC: the only hard constraint is that AC must be visible (HS ≤ AC).
         // No Columns.Count upper bound — allows the rightmost slot to be blank when the
         // directory tree is shallow (Finder behavior: scroll position is preserved).
@@ -4330,6 +4403,7 @@ static class Program
             // Column instance, so setting col.RestoreTo on the pre-rename Column would not
             // propagate. Build the refreshed column directly and set RestoreTo on it instead.
             Column refreshed = await CreateColumnAsync(col.Path);
+            refreshed.Width = col.Width;
             if (refreshed.LoadingTask != null) await refreshed.LoadingTask;
             refreshed.RestoreTo = isDir ? newName + "/" : newName;
             SeekRestoreTo(refreshed);
@@ -4416,6 +4490,7 @@ static class Program
         if (result == "OK")
         {
             Column refreshed = await CreateColumnAsync(col.Path);
+            refreshed.Width = col.Width;
             if (refreshed.LoadingTask != null) await refreshed.LoadingTask;
             refreshed.RestoreTo = name + "/";
             SeekRestoreTo(refreshed);
@@ -4598,6 +4673,36 @@ static class Program
         _cursorMemory[col.Path] = entry;
     }
 
+    // カラム幅の記憶。SaveCursorMemory と同じ LRU 制限を共有する。
+    // 既定幅のものは覚えない(記憶しても復元結果が同じで、枠だけ食うため)。
+    internal static void SaveColumnWidth(Pane pane, Column col)
+    {
+        if (col.Width == DefaultColumnWidth)
+        {
+            // 既定に戻した場合は記憶も消す。そうしないと以前の幅が復活してしまう。
+            if (pane.WidthMemory.Remove(col.Path))
+                pane.WidthMemoryKeys.Remove(col.Path);
+            return;
+        }
+
+        if (!pane.WidthMemory.ContainsKey(col.Path))
+        {
+            if (pane.WidthMemoryKeys.Count >= CursorMemoryLimit)
+            {
+                pane.WidthMemory.Remove(pane.WidthMemoryKeys[0]);
+                pane.WidthMemoryKeys.RemoveAt(0);
+            }
+            pane.WidthMemoryKeys.Add(col.Path);
+        }
+        pane.WidthMemory[col.Path] = col.Width;
+    }
+
+    internal static void ApplyColumnWidth(Pane pane, Column col)
+    {
+        if (pane.WidthMemory.TryGetValue(col.Path, out int width))
+            col.Width = width;
+    }
+
     static void ApplyCursorMemory(Column col)
     {
         if (!_cursorMemory.TryGetValue(col.Path, out string? target)) return;
@@ -4657,6 +4762,7 @@ static class Program
         SaveCursorMemory(current);
 
         Column refreshed = await CreateColumnAsync(currentPath);
+        refreshed.Width = current.Width;
         if (refreshed.LoadingTask != null)
             await refreshed.LoadingTask;
 
@@ -5616,6 +5722,7 @@ static class Program
             Column col = pane.Columns[pane.Columns.Count - 1];
             col.ReadCts?.Cancel();
             SaveCursorMemory(col);
+            SaveColumnWidth(pane, col);
             pane.Columns.RemoveAt(pane.Columns.Count - 1);
         }
 
@@ -5632,6 +5739,7 @@ static class Program
                 break; // cycle: this directory (or a symlink resolving to it) is already in the chain
 
             Column next = await CreateColumnAsync(nextPath);
+            ApplyColumnWidth(pane, next);
             pane.Columns.Add(next);
             visitedCanonical.Add(canonicalNext);
             // Entries aren't loaded yet, so the chain can't walk deeper here;
@@ -5698,6 +5806,117 @@ static class Program
         UpdateHorizontalScroll(FocusedPane);
     }
 
+    // Shift+← / Shift+→: カーソルのあるカラムだけを伸縮させる。ディスクを触らないので
+    // 同期実行でよい(キーハンドラ内で await するとメインループが止まる — CLAUDE.md 参照)。
+    internal static void ResizeActiveColumn(Pane pane, int delta)
+    {
+        if (pane.Columns.Count == 0) return;
+
+        Column col = pane.Columns[pane.ActiveColumn];
+        int width = Math.Clamp(col.Width + delta, MinColumnWidth, Math.Max(MinColumnWidth, SafeWindowWidth()));
+        if (width == col.Width) return;
+
+        col.Width = width;
+        SaveColumnWidth(pane, col);
+        UpdateHorizontalScroll(pane);
+
+        // プレビューのキャンバス幅が変わるので描き直させる。
+        if (pane.Preview.IsVisible) StartPreviewLoad(pane, forceReload: true);
+    }
+
+    // Shift+Y: フォーカスペインのカラム幅をもう一方のペインへ複製する。
+    // 幅は既定でペインごとに独立しているため、揃えたいときだけ明示的に呼ぶ。
+    internal static void SyncColumnWidthsToOtherPane()
+    {
+        if (!State.SplitActive)
+        {
+            _lastErrorMessage = "[no other pane]";
+            return;
+        }
+
+        Pane source = FocusedPane;
+        Pane target = State.Panes[State.FocusedPane == 0 ? 1 : 0];
+
+        int shared = Math.Min(source.Columns.Count, target.Columns.Count);
+        for (int i = 0; i < shared; i++)
+        {
+            target.Columns[i].Width = source.Columns[i].Width;
+            // 相手ペインの次回リビルドでも残るよう、記憶にも書いておく。
+            SaveColumnWidth(target, target.Columns[i]);
+        }
+
+        UpdateHorizontalScroll(target);
+        if (target.Preview.IsVisible) StartPreviewLoad(target, forceReload: true);
+        State.PrevFrame = null;
+    }
+
+    // Shift+O: 上下ペインを入れ替える。フォーカスは同じ側に留まる(上は上のまま)ので、
+    // 入れ替わるのは「どちらの内容がアクティブか」。カラム幅は Column が持っているため
+    // 自動的にペインについて移動する。
+    internal static void SwapPanes()
+    {
+        if (!State.SplitActive)
+        {
+            _lastErrorMessage = "[no other pane]";
+            return;
+        }
+
+        (State.Panes[0], State.Panes[1]) = (State.Panes[1], State.Panes[0]);
+        // State.FocusedPane は意図的に据え置く。
+
+        State.PrevFrame = null; // レイアウトが変わるため強制フル再描画
+
+        foreach (Pane p in State.Panes)
+        {
+            UpdateHorizontalScroll(p);
+            // 上下でペイン高さが違う(ComputeSplitPaneHeights)ため、
+            // ラスタライズ済みのプレビューは今のサイズでは合わない。
+            if (p.Preview.IsVisible) StartPreviewLoad(p, forceReload: true);
+        }
+    }
+
+    // o: フォーカスペインのパスをもう一方のペインのパスに合わせる。
+    // JumpToPathAsync は読み込み完了を await するのでメインループを止めるが、
+    // これは既存のブックマーク(b)・履歴(h)ジャンプと同じ「明示的なジャンプ」であり、
+    // カーソル移動起因の読み込みではない。
+    internal static async Task SyncPaneToOtherPathAsync(Pane pane)
+    {
+        if (!State.SplitActive)
+        {
+            _lastErrorMessage = "[no other pane]";
+            return;
+        }
+
+        Pane other = State.Panes[State.FocusedPane == 0 ? 1 : 0];
+        if (other.Columns.Count == 0) return;
+
+        string target = other.Columns[other.ActiveColumn].Path;
+        if (pane.Columns.Count > 0 &&
+            string.Equals(pane.Columns[pane.ActiveColumn].Path, target, StringComparison.OrdinalIgnoreCase))
+            return; // 既に同じ。無用な再読込とちらつきを避ける。
+
+        if (target == "::DRIVES::")
+        {
+            // ドライブ一覧は実パスではないので JumpToPathAsync では扱えない。ルートへ組み直す。
+            CancelAllReadsInPane(pane);
+            pane.Columns.Clear();
+            pane.ActiveColumn = 0;
+            pane.HorizontalScroll = 0;
+            Column root = await CreateColumnAsync(GetRootPath());
+            ApplyColumnWidth(pane, root);
+            pane.Columns.Add(root);
+            await RebuildRightSideAsync(pane, 0);
+            _lastErrorMessage = null;
+        }
+        else
+        {
+            await JumpToPathAsync(pane, target);
+        }
+
+        if (pane.Preview.IsVisible) StartPreviewLoad(pane, forceReload: true);
+        State.PrevFrame = null;
+    }
+
     static void CancelAllReadsInPane(Pane pane)
     {
         // 破棄される Pane 配下の全カラムで非同期読み込み中の ReadCts をキャンセルし、
@@ -5706,6 +5925,7 @@ static class Program
         {
             col.ReadCts?.Cancel();
             SaveCursorMemory(col);
+            SaveColumnWidth(pane, col);
         }
     }
 
@@ -5728,9 +5948,13 @@ static class Program
             return;
         }
 
-        // Cancel any in-flight loads on the existing column chain before discarding it.
+        // Cancel any in-flight loads on the existing column chain before discarding it,
+        // and remember each column's width so revisiting the same directory restores it.
         foreach (Column existing in pane.Columns)
+        {
             existing.ReadCts?.Cancel();
+            SaveColumnWidth(pane, existing);
+        }
 
         // Split the target path into segments, e.g. "C:\Users\me\docs" -> ["C:\", "Users", "me", "docs"].
         var segments = new List<string>();
@@ -5746,6 +5970,7 @@ static class Program
         string rootMarker = GetRootPath();
         Column rootColumn = await CreateColumnAsync(rootMarker);
         if (rootColumn.LoadingTask != null) await rootColumn.LoadingTask;
+        ApplyColumnWidth(pane, rootColumn);
         pane.Columns.Add(rootColumn);
 
         // Select the drive (Windows) or first segment inside the root column.
@@ -5762,12 +5987,26 @@ static class Program
             rootColumn.Selected = driveIndex;
             accumulatedPath = root; // e.g. "C:\"
         }
-        else
+        else // 非 Windows
         {
             accumulatedPath = "/";
         }
 
         pane.ActiveColumn = 0;
+
+        // Windows ではルートカラムがドライブ一覧 (::DRIVES::) なので、その下に
+        // ドライブ直下 ("C:\") のカラムを積んでからセグメントを辿る必要がある。
+        // これがないと最初のセグメント("Users" など)をドライブ一覧の中から探して
+        // しまい、必ず "Path not found" で抜けていた(ブックマーク・履歴ジャンプも
+        // 同じ経路なので同様に失敗していた)。
+        if (IsWindows())
+        {
+            Column driveColumn = await CreateColumnAsync(accumulatedPath);
+            if (driveColumn.LoadingTask != null) await driveColumn.LoadingTask;
+            ApplyColumnWidth(pane, driveColumn);
+            pane.Columns.Add(driveColumn);
+            pane.ActiveColumn++;
+        }
 
         foreach (string segment in segments)
         {
@@ -5788,6 +6027,7 @@ static class Program
             while (pane.Columns.Count > pane.ActiveColumn + 1)
                 pane.Columns.RemoveAt(pane.Columns.Count - 1);
 
+            ApplyColumnWidth(pane, next);
             pane.Columns.Add(next);
             pane.ActiveColumn++;
         }
@@ -5946,6 +6186,17 @@ static class Program
         State.PrevHeight = h;
         State.PrevFrame = null; // force full redraw in Draw()
 
+        // 端末が狭くなったとき、画面より広いカラムが残らないよう全ペインを詰める。
+        // フォーカスしていないペインも描画されるため、pane 引数ではなく State.Panes を回す。
+        foreach (Pane p in State.Panes)
+        {
+            foreach (Column col in p.Columns)
+            {
+                if (col.Width > w)
+                    col.Width = Math.Max(MinColumnWidth, w);
+            }
+        }
+
         UpdateHorizontalScroll(pane);
 
         // Clamp every column's scroll offset for the new height
@@ -6075,7 +6326,7 @@ static class Program
         }
 
         // Override status with preview-hidden hint only when terminal width is the limiting factor
-        if (pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane) && width < ColumnWidth * 2)
+        if (pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane) && width < DefaultColumnWidth * 2)
         {
             _lastErrorMessage = "[preview hidden: narrow terminal]";
         }
@@ -6182,12 +6433,13 @@ static class Program
 
     internal static void DrawPaneToLines(Line[] lines, Pane pane, int yOffset, int height, bool focused, bool showOwnPathLine, int width)
     {
-        bool showPreview = pane.Preview.IsVisible && width >= ColumnWidth * 2;
+        bool showPreview = pane.Preview.IsVisible && width >= DefaultColumnWidth * 2;
         bool filePreview = pane.Preview.IsVisible && SelectedItemIsFileOrDrive(pane);
 
         int displayX = 0;
         int drawnColumnsWidth = 0;
-        int columnDrawLimit = filePreview ? width - ColumnWidth : width;
+        // プレビューは Column ではなく固有の幅を持たないので、取り分は既定幅で予約する。
+        int columnDrawLimit = filePreview ? width - DefaultColumnWidth : width;
 
         // Column/preview body height: normally the rectangle reserves 3 rows internally
         // (header + 2 rows matching the single-pane shared footer). When this pane draws
@@ -6196,14 +6448,14 @@ static class Program
         // reservation by 1 without touching DrawColumnToLines/DrawPreviewToLines math.
         int bodyFrameHeight = showOwnPathLine ? height + 1 : height;
 
-        for (int i = pane.HorizontalScroll;
-             i < pane.Columns.Count && displayX + ColumnWidth <= columnDrawLimit;
-             i++)
+        for (int i = pane.HorizontalScroll; i < pane.Columns.Count; i++)
         {
             bool isFirstVisible = (i == pane.HorizontalScroll);
-            DrawColumnToLines(lines, pane, pane.Columns[i], displayX, i == pane.ActiveColumn, i < pane.ActiveColumn, width, bodyFrameHeight, isFirstVisible, focused, yOffset);
-            displayX += ColumnWidth;
-            drawnColumnsWidth += ColumnWidth;
+            int cw = NextColumnWidth(pane, i, columnDrawLimit - displayX, isFirstVisible);
+            if (cw <= 0) break;
+            DrawColumnToLines(lines, pane, pane.Columns[i], displayX, i == pane.ActiveColumn, i < pane.ActiveColumn, width, bodyFrameHeight, isFirstVisible, focused, yOffset, cw);
+            displayX += cw;
+            drawnColumnsWidth += cw;
         }
 
         if (showPreview)
@@ -6219,7 +6471,7 @@ static class Program
                 content = pane.Preview.Content;
             }
 
-            if (previewWidth >= ColumnWidth)
+            if (previewWidth >= DefaultColumnWidth)
                 DrawPreviewToLines(lines, content, drawnColumnsWidth, previewWidth, bodyFrameHeight, yOffset);
         }
 
@@ -6233,8 +6485,12 @@ static class Program
         }
     }
 
-    internal static void DrawColumnToLines(Line[] lines, Pane pane, Column column, int displayX, bool active, bool isLeft, int frameWidth, int frameHeight, bool isFirstVisible, bool focused, int yOffset)
+    // widthOverride: 残り幅に切り詰めた実効幅。0 なら column.Width をそのまま使う
+    // (既定引数にしてあるのは既存のテスト呼び出しを壊さないため)。
+    internal static void DrawColumnToLines(Line[] lines, Pane pane, Column column, int displayX, bool active, bool isLeft, int frameWidth, int frameHeight, bool isFirstVisible, bool focused, int yOffset, int widthOverride = 0)
     {
+        int columnWidth = widthOverride > 0 ? widthOverride : column.Width;
+
         // frameHeight is the height of the rectangle assigned to this pane (not the whole screen);
         // subtract 3 rows (header + full-path row + status row) from that rectangle height.
         int visibleHeight = frameHeight - 3;  // Reserve 3 rows: header + fullpath + status
@@ -6282,7 +6538,7 @@ static class Program
 
         // Content slot: non-first columns lose 1 display col to the separator
         int separatorWidth = isFirstVisible ? 0 : 1;
-        int contentSlot = ColumnWidth - separatorWidth;  // display cols available for content
+        int contentSlot = columnWidth - separatorWidth;  // display cols available for content
         int maxEntryWidth = contentSlot - 2;             // minus 2-char prefix
 
         // Header - show only leaf name, not full path
@@ -6306,7 +6562,7 @@ static class Program
 
         header = CharacterWidth.SmartTruncate(header, contentSlot);
         int headerDisplayWidth = CharacterWidth.GetStringWidth(header);
-        lines[yOffset + 0].AddColumn(header, headerDisplayWidth, ColumnWidth);
+        lines[yOffset + 0].AddColumn(header, headerDisplayWidth, columnWidth);
 
         int startRow = 1;
         int scrollOffset = column.ScrollOffset;
@@ -6335,7 +6591,7 @@ static class Program
                 int vi = leapScroll + i;
                 if (vi >= leapVisible.Count)
                 {
-                    lines[yOffset + startRow + i].AddColumn("", 0, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn("", 0, columnWidth);
                     continue;
                 }
                 int absIdx = leapVisible[vi];
@@ -6358,7 +6614,7 @@ static class Program
                     int displayTextWidth = CharacterWidth.GetStringWidth(displayText);
                     int paddingNeeded = Math.Max(0, contentSlot - displayTextWidth);
                     string fullLine = bgColor + textColor + displayText + new string(' ', paddingNeeded) + reset;
-                    lines[yOffset + startRow + i].AddColumn(fullLine, displayTextWidth + paddingNeeded, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn(fullLine, displayTextWidth + paddingNeeded, columnWidth);
                 }
                 else if (isMarked)
                 {
@@ -6369,14 +6625,14 @@ static class Program
                     int displayTextWidth = CharacterWidth.GetStringWidth(displayText);
                     int paddingNeeded = Math.Max(0, contentSlot - displayTextWidth);
                     string fullLine = bgColor + textColor + displayText + new string(' ', paddingNeeded) + reset;
-                    lines[yOffset + startRow + i].AddColumn(fullLine, displayTextWidth + paddingNeeded, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn(fullLine, displayTextWidth + paddingNeeded, columnWidth);
                 }
                 else
                 {
                     int displayWidth = 2 + CharacterWidth.GetStringWidth(entry);
                     if (isDirectory)
                         entry = AnsiColors.Colorize(entry, dirColor);
-                    lines[yOffset + startRow + i].AddColumn(prefix + entry, displayWidth, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn(prefix + entry, displayWidth, columnWidth);
                 }
             }
         }
@@ -6387,7 +6643,7 @@ static class Program
             {
                 if (scrollOffset + i >= entryCount)
                 {
-                    lines[yOffset + startRow + i].AddColumn("", 0, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn("", 0, columnWidth);
                     continue;
                 }
 
@@ -6432,7 +6688,7 @@ static class Program
                     string fullLine = bgColor + textColor + displayText + new string(' ', paddingNeeded) + reset;
                     int totalDisplayWidth = displayTextWidth + paddingNeeded;
 
-                    lines[yOffset + startRow + i].AddColumn(fullLine, totalDisplayWidth, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn(fullLine, totalDisplayWidth, columnWidth);
                 }
                 else if (isSelected)
                 {
@@ -6451,7 +6707,7 @@ static class Program
                     string fullLine = bgColor + textColor + displayText + new string(' ', paddingNeeded) + reset;
                     int totalDisplayWidth = displayTextWidth + paddingNeeded;
 
-                    lines[yOffset + startRow + i].AddColumn(fullLine, totalDisplayWidth, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn(fullLine, totalDisplayWidth, columnWidth);
                 }
                 else if (isMarked)
                 {
@@ -6467,14 +6723,14 @@ static class Program
                     string fullLine = bgColor + textColor + displayText + new string(' ', paddingNeeded) + reset;
                     int totalDisplayWidth = displayTextWidth + paddingNeeded;
 
-                    lines[yOffset + startRow + i].AddColumn(fullLine, totalDisplayWidth, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn(fullLine, totalDisplayWidth, columnWidth);
                 }
                 else if (isOtherMatch)
                 {
                     // Other match: green foreground text on default background
                     int displayWidth = 2 + CharacterWidth.GetStringWidth(entry);
                     string coloredEntry = otherMatchFg + entry + "\x1b[0m";
-                    lines[yOffset + startRow + i].AddColumn(prefix + coloredEntry, displayWidth, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn(prefix + coloredEntry, displayWidth, columnWidth);
                 }
                 else
                 {
@@ -6482,7 +6738,7 @@ static class Program
                     int displayWidth = 2 + CharacterWidth.GetStringWidth(entry);
                     if (isDirectory)
                         entry = AnsiColors.Colorize(entry, dirColor);
-                    lines[yOffset + startRow + i].AddColumn(prefix + entry, displayWidth, ColumnWidth);
+                    lines[yOffset + startRow + i].AddColumn(prefix + entry, displayWidth, columnWidth);
                 }
             }
         }
