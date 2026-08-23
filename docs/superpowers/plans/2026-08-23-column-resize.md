@@ -84,13 +84,15 @@ the full chain `::DRIVES::` → `C:\` → …segments… → target.
 
 ## Unresolved issues
 
-- **Shift+Arrow on POSIX terminals.** `Console.ReadKey` reports
-  `ConsoleModifiers.Shift` for Shift+Arrow reliably on Windows, this app's
-  primary target. Some Linux/macOS terminals send a CSI sequence
-  (`ESC [1;2D`) that .NET may surface without the modifier, in which case resize
-  would silently act as plain cursor movement there. Verified on Windows only.
-  If a POSIX fallback is wanted, add an alternate binding rather than reworking
-  key parsing.
+- **Shift+Arrow never reaches the app** — confirmed by the user on Windows, not
+  just a POSIX concern. Windows Terminal binds Shift+Arrow to "extend text
+  selection" and swallows it; the app reads keys with a plain
+  `Console.ReadKey(true)` and cannot intercept a terminal-level binding. Some
+  Linux/macOS terminals send `ESC [1;2D`, which .NET may surface without the
+  modifier, for the same net effect. Resolved by adding `[` / `]` as the primary
+  resize keys; the Shift+Arrow binding stays as a fallback for terminals that do
+  pass it through. Not worth further work unless the app moves off
+  `Console.ReadKey`.
 
 ## Completion checklist
 
@@ -100,9 +102,10 @@ the full chain `::DRIVES::` → `C:\` → …segments… → target.
 
 ## Manual verification checklist (for the user)
 
-1. `Shift+→` several times on a column with long filenames — only that column
-   widens, 2 cells per press, names stop truncating; neighbours unchanged.
-2. `Shift+←` past the floor — stops at 10, no corruption or negative padding.
+1. `]` several times on a column with long filenames — only that column widens,
+   2 cells per press, names stop truncating; neighbours unchanged.
+2. `[` past the floor — stops at 10, no corruption or negative padding.
+   (`Shift+→` / `Shift+←` do the same where the terminal passes them through.)
 3. Widen a column, `→` into a child, `←` back, move the cursor up and down,
    `→` again — the widened column returns at its set width (carry-over by path).
 4. `Ctrl+W` to split. Resize in the top pane — the bottom pane is untouched.

@@ -14,7 +14,8 @@ agree on a path, or to make them trade places, without navigating each by hand.
 
 | Key | Action |
 |---|---|
-| `Shift+Left` / `Shift+Right` | Narrow / widen the column under the cursor |
+| `[` / `]` | Narrow / widen the column under the cursor |
+| `Shift+Left` / `Shift+Right` | Same, where the terminal passes the key through |
 | `Shift+Y` | Copy the focused pane's column widths onto the other pane |
 | `o` | Set the focused pane's path to the other pane's path |
 | `Shift+O` | Swap the top and bottom panes |
@@ -38,6 +39,15 @@ to the same width whenever they showed the same directory, which is exactly what
 
 **Session only.** No new config file, no persistence across restarts. Widths are
 cheap to re-set and a settings file is a separate concern from this feature.
+
+**`[` / `]` are the primary resize keys.** Shift+Arrow was the original binding,
+but Windows Terminal binds Shift+Arrow to "extend text selection" and consumes
+it before the application ever sees it — the app reads keys with a plain
+`Console.ReadKey(true)` and has no way to intercept that. The Shift+Arrow
+binding is kept as a fallback for terminals that do pass it through. The bracket
+handlers deliberately ignore modifiers: on some keyboard layouts `[` and `]`
+themselves require Shift or AltGr, so a matching `KeyChar` already settles
+intent.
 
 **Step ±2, min 10, max = terminal width.** ±2 is fast enough to be usable while
 still landing on an exact width. 10 keeps the 2-char prefix, the separator and a

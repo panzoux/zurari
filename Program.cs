@@ -3467,7 +3467,15 @@ static class Program
                 break;
 
             default:
-                if (key.KeyChar == '/' && key.Modifiers == ConsoleModifiers.None)
+                // [ / ] でもカラム幅を伸縮できる。Shift+←/→ は Windows Terminal が
+                // 文字選択用に横取りしてアプリまで届かないことがあるため、こちらが実用上の主役。
+                // 修飾キーは見ない — キーボードレイアウトによっては [ ] 自体が Shift や
+                // AltGr を要するので、KeyChar が一致した時点で意図は確定している。
+                if (key.KeyChar == '[')
+                    ResizeActiveColumn(pane, -ColumnWidthStep);
+                else if (key.KeyChar == ']')
+                    ResizeActiveColumn(pane, +ColumnWidthStep);
+                else if (key.KeyChar == '/' && key.Modifiers == ConsoleModifiers.None)
                     EnterSearchMode(pane);
                 else if (key.KeyChar == '\\' && key.Modifiers == ConsoleModifiers.None)
                     await ShowContextMenuAsync(pane);
