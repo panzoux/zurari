@@ -94,9 +94,48 @@ the full chain `::DRIVES::` → `C:\` → …segments… → target.
   pass it through. Not worth further work unless the app moves off
   `Console.ReadKey`.
 
+### Bugs found during the user's manual verification (all pre-existing on `main`)
+
+Verified against `main` with `git show main:Program.cs` — none is a regression
+from this branch.
+
+**1. Move went to the wrong directory.** `StartCopyOrMoveAsync` took the
+destination from `otherPane.Columns[otherPane.ActiveColumn].Path`, but the pane's
+own path line displays `GetCurrentFullPath`, i.e. the directory *under the
+cursor*. With the other pane's cursor on `1fol/` inside `D:	est`, the UI
+promised `D:	estfol` and the code used `D:	est`. Extracted
+`ResolvePaneDestination`, which prefers the selected directory and falls back to
+the column path when the cursor is on a file.
+
+**2. That wrong destination silently destroyed the directory.** Moving
+`D:	estfol2` into `D:	est` makes `dest == src`.
+`CopyOrMoveDirectoryAsync` then creates the destination (already there), moves
+each child onto itself, finds the source "empty" and runs
+`Directory.Delete(srcDir)` — the folder vanishes. Guarded twice: in
+`EnqueueCopyOrMoveJob` with a user-facing message, and inside `RunBatchAsync`
+so no caller can trigger the deletion. Both use the existing
+`PathOverlapHelper`, extended with a fail-closed `PathsOverlapSafe`.
+Confirmed the guard is load-bearing by disabling it and watching
+`MoveAsync_EmptyDirectoryIntoItsOwnParent_DoesNotDeleteIt` fail with
+"the directory must survive a move onto itself".
+
+**3. The "Collection was modified" crash.** Dialog result callbacks were typed
+`Action<T>`, so the six `async` lambdas passed to `ShowConfirm`/`ShowTextInput`/
+`ShowListSelect` were **async void**. Each ran synchronously only up to its first
+real `await` (e.g. `await refreshed.LoadingTask` in
+`ExecuteCreateDirectoryAsync`); the remainder — including
+`pane.Columns[pane.ActiveColumn] = refreshed` and `RebuildRightSideAsync` —
+resumed on a thread-pool thread and raced the main loop, which was concurrently
+enumerating `pane.Columns` in `ExtendRightSideIfReadyAsync`. Changed `OnResult`
+to `Func<T, Task>`, made the close helpers and dialog key handlers async, and
+awaited them from `HandleDialogKeyAsync`, so callbacks now complete on the main
+loop before it continues — matching the "Main() awaits the full handler chain"
+rule in CLAUDE.md. The `Action<T>` overloads of `Show*` remain, so the eight
+synchronous call sites are unchanged.
+
 ## Completion checklist
 
-- [x] Build 0 warnings, tests green — 230/230 → **267/267**
+- [x] Build 0 warnings, tests green — 230/230 → **289/289**
 - [ ] Manual verification checklist run by the user (TUI cannot be driven here)
 - [ ] Merge to `main`, remove worktree
 

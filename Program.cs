@@ -564,6 +564,20 @@ static class FileOpEngine
             string name = Path.GetFileName(src.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
             string dest = Path.Combine(destDir, name);
 
+            // 多層防御: src と dest が同一、または dest が src 配下だと、下の
+            // CopyOrMoveDirectoryAsync が「空になった src」を消しにかかって
+            // ディレクトリごと消滅する。UI 側でも弾いているが、エンジン単体でも拒否する。
+            if (PathOverlapHelper.PathsOverlapSafe(src, dest))
+            {
+                failed++;
+                const string selfError = "destination is the item itself or inside it";
+                firstError ??= selfError;
+                progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, isMove ? "MOVE" : "COPY", "FAIL", src, dest, selfError));
+                doneCount += CountUnits(src);
+                progress.Report(new FileOpProgressInfo(doneCount, totalCount, bytesTransferred, src));
+                continue;
+            }
+
             bool isDir;
             try { isDir = Directory.Exists(src); }
             catch (Exception ex)
@@ -980,6 +994,14 @@ static class PathOverlapHelper
         return false;
     }
 
+    // Path.GetFullPath は不正なパスで投げる。ファイル操作エンジンの内側で例外が出ると
+    // 転送全体が落ちるので、判定不能なときは「重なっている」= 安全側に倒す。
+    public static bool PathsOverlapSafe(string a, string b)
+    {
+        try { return PathsOverlap(a, b); }
+        catch { return true; }
+    }
+
     private static string NormalizeForOverlap(string path)
     {
         string full = System.IO.Path.GetFullPath(path);
@@ -1330,7 +1352,10 @@ abstract class DialogState
 sealed class ConfirmDialogState : DialogState
 {
     public string Message = "";
-    public Action<bool?> OnResult = _ => { };   // true=Yes, false=No, null=Esc
+    // Func<..., Task> であって Action ではない: async ラムダを Action に入れると async void になり、
+    // 最初の await の後がスレッドプールで再開してメインループと並走する。実際に
+    // pane.Columns を並行変更して "Collection was modified" でクラッシュしていた。
+    public Func<bool?, Task> OnResult = _ => Task.CompletedTask;   // true=Yes, false=No, null=Esc
 }
 
 sealed class TextInputDialogState : DialogState
@@ -1339,7 +1364,7 @@ sealed class TextInputDialogState : DialogState
 
     public string Buffer = "";
     public int CursorPos;
-    public Action<string?> OnResult = _ => { }; // null=キャンセル
+    public Func<string?, Task> OnResult = _ => Task.CompletedTask; // null=キャンセル
     public Func<char, bool>? CharFilter;         // null = accept all (Rename's existing behavior)
     public string HintText = DefaultHintText;
     public Func<string, string?>? Validate;      // null = no pre-close check (Rename's existing behavior).
@@ -1354,7 +1379,7 @@ sealed class ListSelectDialogState : DialogState
     public List<string> FilteredItems = new();
     public string FilterQuery = "";
     public int Selected;
-    public Action<string?> OnResult = _ => { }; // 確定項目の文字列 or null
+    public Func<string?, Task> OnResult = _ => Task.CompletedTask; // 確定項目の文字列 or null
 }
 
 sealed class JobListDialogState : DialogState
@@ -3516,7 +3541,7 @@ static class Program
         {
             int otherPaneIndex = State.FocusedPane == 0 ? 1 : 0;
             Pane otherPane = State.Panes[otherPaneIndex];
-            string destDir = otherPane.Columns[otherPane.ActiveColumn].Path;
+            string destDir = ResolvePaneDestination(otherPane);
 
             if (destDir == "::DRIVES::")
             {
@@ -3548,8 +3573,29 @@ static class Program
         await Task.CompletedTask;
     }
 
+    // コピー/移動の転送先としてペインが指している場所。
+    // ペインが自分のパス行に出しているのは「カーソル下のディレクトリ」(GetCurrentFullPath
+    // と同じ)なので、それに合わせる。アクティブカラムのパスをそのまま使うと画面表示と
+    // 食い違い、1つ上の階層へ運んでしまう。カーソルがファイル上ならカラムのパスへ戻す。
+    internal static string ResolvePaneDestination(Pane pane)
+    {
+        if (pane.Columns.Count == 0) return "";
+        return GetSelectedDirectory(pane, pane.ActiveColumn)
+               ?? pane.Columns[pane.ActiveColumn].Path;
+    }
+
     static void EnqueueCopyOrMoveJob(string opName, List<string> targets, string destDir, bool isMove)
     {
+        // 転送先が対象そのもの(= 対象の親ディレクトリ)や対象の配下だと、
+        // 「自分自身への移動」になって中身が消える。先に弾く。
+        foreach (string target in targets)
+        {
+            if (!PathOverlapHelper.PathsOverlapSafe(target, destDir)) continue;
+            string name = Path.GetFileName(target.TrimEnd('/', '\\'));
+            _lastErrorMessage = $"Cannot {opName.ToLowerInvariant()} \"{name}\" into itself or its own folder";
+            return;
+        }
+
         if (BusyWarningHelper.AnyOverlapsBusyPaths(targets))
         {
             ShowConfirm("Busy Warning", "An active job is using this path. Continue anyway?", proceed =>
@@ -5237,6 +5283,9 @@ static class Program
     }
 
     static void ShowConfirm(string title, string message, Action<bool?> onResult)
+        => ShowConfirm(title, message, r => { onResult(r); return Task.CompletedTask; });
+
+    static void ShowConfirm(string title, string message, Func<bool?, Task> onResult)
     {
         State.Dialog = new ConfirmDialogState
         {
@@ -5247,6 +5296,12 @@ static class Program
     }
 
     static void ShowTextInput(string title, string initialValue, Action<string?> onResult,
+        Func<char, bool>? charFilter = null, string hintText = TextInputDialogState.DefaultHintText,
+        Func<string, string?>? validate = null)
+        => ShowTextInput(title, initialValue, r => { onResult(r); return Task.CompletedTask; },
+            charFilter, hintText, validate);
+
+    static void ShowTextInput(string title, string initialValue, Func<string?, Task> onResult,
         Func<char, bool>? charFilter = null, string hintText = TextInputDialogState.DefaultHintText,
         Func<string, string?>? validate = null)
     {
@@ -5263,6 +5318,9 @@ static class Program
     }
 
     static void ShowListSelect(string title, IReadOnlyList<string> items, Action<string?> onResult)
+        => ShowListSelect(title, items, r => { onResult(r); return Task.CompletedTask; });
+
+    static void ShowListSelect(string title, IReadOnlyList<string> items, Func<string?, Task> onResult)
     {
         var allItems = new List<string>(items);
         State.Dialog = new ListSelectDialogState
@@ -5350,49 +5408,47 @@ static class Program
 
     // 開いているダイアログを閉じ、結果コールバックを呼ぶ共通クローズ処理。
     // 呼び出し元(HandleDialogKeyAsync)が確定/キャンセル時に呼ぶ。
-    static void CloseConfirmDialog(ConfirmDialogState dialog, bool? result)
+    static Task CloseConfirmDialogAsync(ConfirmDialogState dialog, bool? result)
     {
         State.Dialog = null;
-        dialog.OnResult(result);
+        return dialog.OnResult(result);
     }
 
-    static void CloseTextInputDialog(TextInputDialogState dialog, string? result)
+    static Task CloseTextInputDialogAsync(TextInputDialogState dialog, string? result)
     {
         State.Dialog = null;
-        dialog.OnResult(result);
+        return dialog.OnResult(result);
     }
 
-    static void CloseListSelectDialog(ListSelectDialogState dialog, string? result)
+    static Task CloseListSelectDialogAsync(ListSelectDialogState dialog, string? result)
     {
         State.Dialog = null;
-        dialog.OnResult(result);
+        return dialog.OnResult(result);
     }
 
-    static Task HandleDialogKeyAsync(Pane pane, ConsoleKeyInfo key)
+    internal static async Task HandleDialogKeyAsync(Pane pane, ConsoleKeyInfo key)
     {
         DialogState? dialog = State.Dialog;
-        if (dialog == null) return Task.CompletedTask;
+        if (dialog == null) return;
 
         switch (dialog)
         {
             case ConfirmDialogState confirm:
-                HandleConfirmDialogKey(confirm, key);
+                await HandleConfirmDialogKeyAsync(confirm, key);
                 break;
 
             case TextInputDialogState textInput:
-                HandleTextInputDialogKey(textInput, key);
+                await HandleTextInputDialogKeyAsync(textInput, key);
                 break;
 
             case ListSelectDialogState listSelect:
-                HandleListSelectDialogKey(listSelect, key);
+                await HandleListSelectDialogKeyAsync(listSelect, key);
                 break;
 
             case JobListDialogState jobList:
                 HandleJobListDialogKey(jobList, key);
                 break;
         }
-
-        return Task.CompletedTask;
     }
 
     static void HandleJobListDialogKey(JobListDialogState dialog, ConsoleKeyInfo key)
@@ -5432,30 +5488,30 @@ static class Program
         }
     }
 
-    static void HandleConfirmDialogKey(ConfirmDialogState dialog, ConsoleKeyInfo key)
+    static async Task HandleConfirmDialogKeyAsync(ConfirmDialogState dialog, ConsoleKeyInfo key)
     {
         if (key.Key == ConsoleKey.Escape)
         {
-            CloseConfirmDialog(dialog, null);
+            await CloseConfirmDialogAsync(dialog, null);
             return;
         }
 
         if (key.Key == ConsoleKey.Enter || key.KeyChar is 'y' or 'Y')
         {
-            CloseConfirmDialog(dialog, true);
+            await CloseConfirmDialogAsync(dialog, true);
             return;
         }
 
         if (key.KeyChar is 'n' or 'N')
         {
-            CloseConfirmDialog(dialog, false);
+            await CloseConfirmDialogAsync(dialog, false);
             return;
         }
 
         // Everything else is swallowed.
     }
 
-    static void HandleTextInputDialogKey(TextInputDialogState dialog, ConsoleKeyInfo key)
+    static async Task HandleTextInputDialogKeyAsync(TextInputDialogState dialog, ConsoleKeyInfo key)
     {
         // Cleared on every keystroke; re-set below only if this keystroke itself produces a
         // new message (a rejected character, or a failed pre-close Validate on Enter) — so a
@@ -5464,7 +5520,7 @@ static class Program
 
         if (key.Key == ConsoleKey.Escape)
         {
-            CloseTextInputDialog(dialog, null);
+            await CloseTextInputDialogAsync(dialog, null);
             return;
         }
 
@@ -5481,7 +5537,7 @@ static class Program
                     return;
                 }
             }
-            CloseTextInputDialog(dialog, dialog.Buffer);
+            await CloseTextInputDialogAsync(dialog, dialog.Buffer);
             return;
         }
 
@@ -5548,11 +5604,11 @@ static class Program
         // Everything else is swallowed.
     }
 
-    static void HandleListSelectDialogKey(ListSelectDialogState dialog, ConsoleKeyInfo key)
+    static async Task HandleListSelectDialogKeyAsync(ListSelectDialogState dialog, ConsoleKeyInfo key)
     {
         if (key.Key == ConsoleKey.Escape)
         {
-            CloseListSelectDialog(dialog, null);
+            await CloseListSelectDialogAsync(dialog, null);
             return;
         }
 
@@ -5561,7 +5617,7 @@ static class Program
             string? result = (dialog.Selected >= 0 && dialog.Selected < dialog.FilteredItems.Count)
                 ? dialog.FilteredItems[dialog.Selected]
                 : null;
-            CloseListSelectDialog(dialog, result);
+            await CloseListSelectDialogAsync(dialog, result);
             return;
         }
 
