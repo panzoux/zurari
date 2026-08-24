@@ -7,8 +7,13 @@ JobManager/conflict-resolution/throttled-reload code worth checking before
 reinventing.
 
 ## Build & test
-- `dotnet build` && `dotnet test` from repo root, both green (0 warnings)
-  before every commit.
+- Always name the test project. Both green (0 warnings) before every commit:
+  - `dotnet build Zurari.Tests/Zurari.Tests.csproj` — builds both projects.
+  - `dotnet test Zurari.Tests/Zurari.Tests.csproj` — runs the suite.
+- Never bare `dotnet build` / `dotnet test` from the repo root: there is no
+  `.sln`, so `build` compiles only `Zurari.csproj` (warnings in test code go
+  unseen) and `test` runs **zero** tests while still exiting 0 — a
+  green-looking no-op that has been mistaken for a passing run.
 - xunit tests in `Zurari.Tests/`; track red→green counts in commits (e.g.
   "green: 169/169") — established convention.
 - `Console.WindowWidth`/`Height` throw with no console attached (xunit). Use
