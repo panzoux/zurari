@@ -1009,6 +1009,28 @@ static class PathOverlapHelper
     }
 }
 
+// ディレクトリ改名時に、履歴やブックマークに残った古いパスを新しいパスへ書き換える。
+static class PathRewriteHelper
+{
+    // entry が oldPath そのもの、または oldPath 配下なら newPath 側へ移し替えた文字列を返す。
+    // 無関係なら entry をそのまま返す。前方一致はセパレータ境界でのみ成立させる
+    // (C:\a の改名が C:\ab を巻き込まないように)。
+    public static string Rewrite(string entry, string oldPath, string newPath)
+    {
+        string e = entry.TrimEnd('\\', '/');
+        string o = oldPath.TrimEnd('\\', '/');
+
+        if (string.Equals(e, o, StringComparison.OrdinalIgnoreCase))
+            return newPath;
+
+        string oWithSep = o + "\\";
+        if (e.StartsWith(oWithSep, StringComparison.OrdinalIgnoreCase))
+            return newPath.TrimEnd('\\', '/') + e.Substring(o.Length);
+
+        return entry;
+    }
+}
+
 static class BusyWarningHelper
 {
     // targetPaths のいずれかが実行中ジョブの busy パスと重なれば true(= 警告が必要)。
@@ -1340,6 +1362,38 @@ static class Bookmarks
         catch
         {
             return false;
+        }
+    }
+
+    // ディレクトリ改名に追随して、該当するブックマーク(とその配下)を付け替える。
+    // 利用者が明示的に作ったデータなので、消すのではなく指し先を直す。
+    // 付け替えで既存項目と重複したら1件に畳む。戻り値は書き換えた件数。
+    public static int Rewrite(string oldPath, string newPath)
+    {
+        var existing = Load();
+        var updated = new List<string>();
+        int changed = 0;
+
+        foreach (string entry in existing)
+        {
+            string rewritten = PathRewriteHelper.Rewrite(entry, oldPath, newPath);
+            if (!ReferenceEquals(rewritten, entry) && rewritten != entry) changed++;
+            if (!updated.Exists(p => string.Equals(p, rewritten, StringComparison.OrdinalIgnoreCase)))
+                updated.Add(rewritten);
+        }
+
+        if (changed == 0) return 0;
+
+        try
+        {
+            string dir = Path.GetDirectoryName(FilePath) ?? ".";
+            Directory.CreateDirectory(dir);
+            File.WriteAllLines(FilePath, updated, Encoding.UTF8);
+            return changed;
+        }
+        catch
+        {
+            return 0;
         }
     }
 }
@@ -3541,7 +3595,7 @@ static class Program
         {
             int otherPaneIndex = State.FocusedPane == 0 ? 1 : 0;
             Pane otherPane = State.Panes[otherPaneIndex];
-            string destDir = ResolvePaneDestination(otherPane);
+            string destDir = ResolvePaneDirectory(otherPane);
 
             if (destDir == "::DRIVES::")
             {
@@ -3573,11 +3627,12 @@ static class Program
         await Task.CompletedTask;
     }
 
-    // コピー/移動の転送先としてペインが指している場所。
-    // ペインが自分のパス行に出しているのは「カーソル下のディレクトリ」(GetCurrentFullPath
-    // と同じ)なので、それに合わせる。アクティブカラムのパスをそのまま使うと画面表示と
-    // 食い違い、1つ上の階層へ運んでしまう。カーソルがファイル上ならカラムのパスへ戻す。
-    internal static string ResolvePaneDestination(Pane pane)
+    // ペインが「今いる場所」として指しているディレクトリ。コピー/移動の転送先と
+    // ブックマーク登録が共有する。ペインが自分のパス行に出しているのは
+    // 「カーソル下のディレクトリ」(GetCurrentFullPath と同じ)なので、それに合わせる。
+    // アクティブカラムのパスをそのまま使うと画面表示と食い違い、1つ上の階層を指してしまう。
+    // カーソルがファイル上ならカラムのパスへ戻す。
+    internal static string ResolvePaneDirectory(Pane pane)
     {
         if (pane.Columns.Count == 0) return "";
         return GetSelectedDirectory(pane, pane.ActiveColumn)
@@ -4450,6 +4505,14 @@ static class Program
         }
 
         OperationLog.Append(new OpLogEntry(DateTime.UtcNow, null, "RENAME", result, oldFullPath, newFullPath, message));
+
+        if (result == "OK" && isDir)
+        {
+            // 履歴・ブックマークは「そのディレクトリ」を指しているので、改名に追随させる。
+            // 追随させないと、古い名前のまま残って選ぶたびに Path not found になる。
+            RewriteHistoryPath(oldFullPath, newFullPath);
+            Bookmarks.Rewrite(oldFullPath, newFullPath);
+        }
 
         if (result == "OK")
         {
@@ -5993,7 +6056,7 @@ static class Program
         }
     }
 
-    static async Task JumpToPathAsync(Pane pane, string path)
+    static async Task<bool> JumpToPathAsync(Pane pane, string path)
     {
         string fullPath;
         try
@@ -6003,13 +6066,13 @@ static class Program
         catch
         {
             _lastErrorMessage = $"Invalid path: {path}";
-            return;
+            return false;
         }
 
         if (!Directory.Exists(fullPath))
         {
             _lastErrorMessage = $"Path not found: {path}";
-            return;
+            return false;
         }
 
         // Cancel any in-flight loads on the existing column chain before discarding it,
@@ -6046,7 +6109,7 @@ static class Program
             if (driveIndex < 0)
             {
                 _lastErrorMessage = $"Path not found: {path}";
-                return;
+                return false;
             }
             rootColumn.Selected = driveIndex;
             accumulatedPath = root; // e.g. "C:\"
@@ -6080,7 +6143,7 @@ static class Program
             if (idx < 0)
             {
                 _lastErrorMessage = $"Path not found: {path}";
-                return;
+                return false;
             }
             current.Selected = idx;
 
@@ -6099,6 +6162,36 @@ static class Program
         UpdateHorizontalScroll(pane);
         _lastErrorMessage = null;
         RecordHistoryVisit(fullPath);
+        return true;
+    }
+
+    internal static IReadOnlyList<string> HistoryForTest => _history;
+
+    internal static void RecordHistoryVisitForTest(string fullPath) => RecordHistoryVisit(fullPath);
+
+    internal static void ClearHistoryForTest() => _history.Clear();
+
+    // 履歴から1件消す。存在しないパスを選んだときに使う——自動で貯まる履歴は
+    // 消えたパスを抱え続けても価値がないため。ブックマークは利用者が明示的に
+    // 作ったデータなので、同じ扱いはせず消さない。
+    internal static void RemoveHistoryEntry(string fullPath)
+    {
+        int i = _history.FindIndex(p => string.Equals(p, fullPath, StringComparison.OrdinalIgnoreCase));
+        if (i >= 0) _history.RemoveAt(i);
+    }
+
+    // ディレクトリ改名時、履歴の該当パス(とその配下)を新しい名前へ付け替える。
+    // 付け替えの結果すでにある項目と重複したら、新しい方(後ろ)を残す。
+    internal static void RewriteHistoryPath(string oldPath, string newPath)
+    {
+        for (int i = 0; i < _history.Count; i++)
+            _history[i] = PathRewriteHelper.Rewrite(_history[i], oldPath, newPath);
+
+        for (int i = _history.Count - 1; i >= 0; i--)
+        {
+            int first = _history.FindIndex(p => string.Equals(p, _history[i], StringComparison.OrdinalIgnoreCase));
+            if (first >= 0 && first < i) _history.RemoveAt(first);
+        }
     }
 
     static void RecordHistoryVisit(string fullPath)
@@ -6131,14 +6224,21 @@ static class Program
             async selected =>
             {
                 if (selected == null) return;
-                await JumpToPathAsync(pane, selected);
+                if (await JumpToPathAsync(pane, selected)) return;
+
+                // 消えたパスを履歴に残しておいても選ぶたびに失敗するだけなので捨てる。
+                RemoveHistoryEntry(selected);
+                _lastErrorMessage = $"Removed from history (not found): {selected}";
             });
     }
 
     static void RequestBookmarkAdd(Pane pane)
     {
-        string currentDir = pane.Columns[pane.ActiveColumn].Path;
-        if (currentDir == "::DRIVES::")
+        // コピー/移動の転送先と同じ規則: ペインのパス行が示す「カーソル下のディレクトリ」。
+        // アクティブカラムのパスを使っていたため、ディレクトリにカーソルを合わせて
+        // ブックマークしても1つ上の階層が登録されていた。
+        string currentDir = ResolvePaneDirectory(pane);
+        if (currentDir.Length == 0 || currentDir == "::DRIVES::")
         {
             _lastErrorMessage = "Cannot bookmark the drive list";
             return;
@@ -7073,9 +7173,7 @@ static class Program
         OverwriteFrameRow(frame, yOffset + rect.Y + rect.Height - 1, rect.X, bottomBorder, width, frame.Length);
     }
 
-    // ANSI付きの行を innerWidth ちょうどの表示幅に整形する。切り詰めが必要な行は
-    // ANSI装飾を落としてプレーンテキストで切り詰め・パディングする(既存のステータスバー実装と
-    // 同水準の割り切り。補足はTask 8.1参照)。
+    // ANSI付きの行を innerWidth ちょうどの表示幅に整形する。
     // internal: Zurari.Tests から InternalsVisibleTo 経由で直接呼び出すため。
     internal static string FitRowToWidth(string rowText, int innerWidth)
     {
@@ -7089,8 +7187,91 @@ static class Program
             // いた(カーソルの反転表示・選択行のハイライトが画面に出ない不具合の原因)。
             return rowText + new string(' ', innerWidth - plainWidth);
         }
-        string truncated = CharacterWidth.SmartTruncate(plain, innerWidth);
-        return CharacterWidth.PadToWidth(truncated, innerWidth);
+
+        // 切り詰めが必要な行。以前はここで plain 化していたため、長い行だけ SGR が
+        // 落ちていた(ブックマーク一覧で、短い項目は反転するのに長いパスの選択行だけ
+        // 反転しない、という不具合)。ANSI を保ったまま切り詰める。
+        if (plain.Length == rowText.Length)
+            return CharacterWidth.PadToWidth(CharacterWidth.SmartTruncate(plain, innerWidth), innerWidth);
+
+        return CharacterWidth.PadToWidth(TruncateAnsiRow(rowText, innerWidth), innerWidth);
+    }
+
+    // SmartTruncate と同じ「前2/3・後1/3を残して中略」規則を、SGR を保ったまま適用する。
+    // エスケープは表示幅0なので、捨てた文字に付いていたエスケープもそのまま出力する
+    // ——そうしないと途中の色指定やリセットが失われ、以降の装飾が崩れる。
+    static string TruncateAnsiRow(string rowText, int innerWidth)
+    {
+        var cellEscapes = new List<string>();
+        var cellChars = new List<char>();
+        var cellWidths = new List<int>();
+
+        var pending = new StringBuilder();
+        var matches = AnsiSgrRegex.Matches(rowText);
+        int matchIndex = 0, pos = 0;
+        while (pos < rowText.Length)
+        {
+            if (matchIndex < matches.Count && matches[matchIndex].Index == pos)
+            {
+                pending.Append(matches[matchIndex].Value);
+                pos += matches[matchIndex].Length;
+                matchIndex++;
+                continue;
+            }
+            cellEscapes.Add(pending.ToString());
+            pending.Clear();
+            cellChars.Add(rowText[pos]);
+            cellWidths.Add(CharacterWidth.GetCharWidth(rowText[pos]));
+            pos++;
+        }
+        string trailingEscapes = pending.ToString(); // 最後の可視文字より後ろのエスケープ
+
+        const string ellipsis = "…";
+        int ellipsisWidth = CharacterWidth.GetStringWidth(ellipsis);
+        int available = innerWidth - ellipsisWidth;
+        if (available < 2)
+            return CharacterWidth.SmartTruncate(StripAnsiForWidth(rowText), innerWidth);
+
+        int widthForEnd = available / 3;
+        int widthForStart = available - widthForEnd;
+
+        int used = 0, headCount = 0;
+        for (int i = 0; i < cellChars.Count; i++)
+        {
+            if (used + cellWidths[i] > widthForStart) break;
+            used += cellWidths[i];
+            headCount++;
+        }
+
+        used = 0;
+        int tailStart = cellChars.Count;
+        for (int i = cellChars.Count - 1; i >= 0; i--)
+        {
+            if (used + cellWidths[i] > widthForEnd) break;
+            used += cellWidths[i];
+            tailStart--;
+        }
+
+        if (headCount >= tailStart)
+            return CharacterWidth.SmartTruncate(StripAnsiForWidth(rowText), innerWidth);
+
+        var sb = new StringBuilder();
+        for (int i = 0; i < headCount; i++)
+        {
+            sb.Append(cellEscapes[i]);
+            sb.Append(cellChars[i]);
+        }
+        // 捨てる区間のエスケープだけを拾って SGR の状態を引き継ぐ
+        for (int i = headCount; i < tailStart; i++)
+            sb.Append(cellEscapes[i]);
+        sb.Append(ellipsis);
+        for (int i = tailStart; i < cellChars.Count; i++)
+        {
+            sb.Append(cellEscapes[i]);
+            sb.Append(cellChars[i]);
+        }
+        sb.Append(trailingEscapes);
+        return sb.ToString();
     }
 
     // frame[y] の表示列 x から displayWidth 分を content で上書きする。
