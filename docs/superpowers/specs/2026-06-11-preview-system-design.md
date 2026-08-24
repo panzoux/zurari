@@ -263,3 +263,35 @@ Navigation moves away from file / to directory
 9. **MP4 video**: select an `.mp4` — dimensions and duration shown
 10. **FLAC audio**: select a `.flac` — sample rate, channels, bit depth, duration shown
 11. **Resize while preview open**: drag terminal wider/narrower — hex bytes-per-row and text line length adapt correctly without hardcoded constants
+
+---
+
+## Directories intentionally have no preview (confirmed 2026-08-24)
+
+Pressing Shift+V while the cursor sits on a directory flips the status hint to
+`Preview[on]` and changes nothing on screen. This is deliberate, not a bug, and
+was re-confirmed by the user after it came up during manual verification.
+
+**The rule.** `SelectedItemIsFileOrDrive` gates the whole preview path. It is
+true for a regular file, for a drive entry in the `::DRIVES::` column, and — as
+a side effect of the name test — for the `<No file>` placeholder, since that
+string does not end in `/`. It is false for a real directory. When it is false:
+
+- `DrawPaneToLines` reserves no preview slot (`columnDrawLimit` stays at the
+  full pane width), so the columns consume everything and the leftover is
+  usually below the `DefaultColumnWidth` minimum needed to draw a preview;
+- `GetPreviewTarget` returns `null`, so `StartPreviewLoad` never even loads
+  content.
+
+**Why.** A directory's child column already shows its contents — that column
+*is* the preview. Reserving a second slot for the same directory would cost a
+column on narrow terminals to show something the user can already see.
+
+**The one confusing consequence**, accepted as-is: an *empty* folder shows a
+"No preview / Empty folder" pane (its `<No file>` placeholder counts as a file),
+while a folder with contents shows no pane at all. This looks inconsistent side
+by side but follows directly from the rule above.
+
+**Rejected alternatives.** Giving directories a real preview pane with item
+counts and a recursive total size was considered and declined: the size walk is
+too slow on large trees to be worth the column it would cost.
