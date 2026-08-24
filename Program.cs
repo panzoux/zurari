@@ -4171,7 +4171,18 @@ static class Program
             pane.ActiveColumn--;
             UpdateHorizontalScroll(pane);
             if (pane.Preview.IsVisible) StartPreviewLoad(pane);
+            RecordCurrentColumnVisit(pane);
         }
+    }
+
+    // 矢印での出入りも履歴に残す。Enter/Backspace/ジャンプだけが記録されていたため、
+    // このアプリの主な移動手段である ←/→ で歩き回っても履歴が増えず、
+    // 「いつ履歴に載るのか分からない」状態になっていた。
+    // カーソルの上下移動では呼ばない —— 覗いただけのディレクトリで履歴が埋まるため。
+    static void RecordCurrentColumnVisit(Pane pane)
+    {
+        if (pane.ActiveColumn < 0 || pane.ActiveColumn >= pane.Columns.Count) return;
+        RecordHistoryVisit(pane.Columns[pane.ActiveColumn].Path);
     }
 
     static async Task MoveRightAsync(Pane pane)
@@ -4182,6 +4193,7 @@ static class Program
             pane.ActiveColumn++;
             UpdateHorizontalScroll(pane);
             if (pane.Preview.IsVisible) StartPreviewLoad(pane);
+            RecordCurrentColumnVisit(pane);
         }
         else if (pane.ActiveColumn < pane.Columns.Count)
         {
@@ -4195,6 +4207,7 @@ static class Program
                 pane.ActiveColumn++;
                 UpdateHorizontalScroll(pane);
                 if (pane.Preview.IsVisible) StartPreviewLoad(pane);
+                RecordCurrentColumnVisit(pane);
             }
         }
     }
@@ -6169,6 +6182,14 @@ static class Program
 
     internal static void RecordHistoryVisitForTest(string fullPath) => RecordHistoryVisit(fullPath);
 
+    internal static Task MoveRightForTestAsync(Pane pane) => MoveRightAsync(pane);
+
+    internal static void MoveLeftForTest(Pane pane) => MoveLeft(pane);
+
+    internal static void MoveUpForTest(Pane pane) => MoveUp(pane);
+
+    internal static void MoveDownForTest(Pane pane) => MoveDown(pane);
+
     internal static void ClearHistoryForTest() => _history.Clear();
 
     // 履歴から1件消す。存在しないパスを選んだときに使う——自動で貯まる履歴は
@@ -6196,6 +6217,9 @@ static class Program
 
     static void RecordHistoryVisit(string fullPath)
     {
+        // ドライブ一覧は実パスではなくジャンプもできないので履歴に入れない。
+        if (fullPath.Length == 0 || fullPath == "::DRIVES::") return;
+
         int existingIndex = _history.FindIndex(p => string.Equals(p, fullPath, StringComparison.OrdinalIgnoreCase));
         if (existingIndex >= 0)
             _history.RemoveAt(existingIndex);

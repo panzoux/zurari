@@ -133,9 +133,43 @@ loop before it continues — matching the "Main() awaits the full handler chain"
 rule in CLAUDE.md. The `Action<T>` overloads of `Show*` remain, so the eight
 synchronous call sites are unchanged.
 
+### History and bookmark defects (second verification round, all pre-existing)
+
+**History kept dead entries.** Selecting a history entry whose directory was
+gone failed and left the entry in place, so it failed again next time.
+`JumpToPathAsync` now returns success, and the history callback prunes on
+failure. Bookmarks deliberately do not get this: history accumulates
+automatically and a dead entry is worthless, while a bookmark is data the user
+created on purpose.
+
+**Renames orphaned history and bookmarks.** Both now follow a renamed directory
+(and everything under it) through a shared `PathRewriteHelper` that matches only
+on separator boundaries, so renaming `old` never captures `oldish`. Duplicates
+created by the rewrite collapse.
+
+**`Shift+B` bookmarked the parent.** It used `Columns[ActiveColumn].Path` — the
+same defect class as the copy/move destination — so it now shares
+`ResolvePaneDirectory` (renamed from `ResolvePaneDestination`, since bookmarks
+use it too).
+
+**Selected dialog rows lost their highlight when truncated.** `FitRowToWidth`
+stripped ANSI before calling `SmartTruncate`, so short bookmark rows inverted and
+long paths did not. Truncation is now ANSI-aware: it keeps the 2/3–1/3
+middle-ellipsis rule and re-emits the escapes of dropped cells, so SGR state
+stays correct across the ellipsis. Confirmed load-bearing by reverting it and
+watching `SelectedRowLongerThanWidth_KeepsItsHighlight` fail.
+
+**History recording was unpredictable.** Only Enter, Backspace and explicit
+jumps recorded — never arrow Left/Right, which is how you actually move in a
+Miller-columns browser. Now `MoveLeft`/`MoveRightAsync` record the directory
+they land on. Cursor up/down deliberately records nothing, so browsing a folder
+does not flood the list (user's choice). `::DRIVES::` is never recorded: it is
+not a real path and jumping to it always fails. Most-recent-first dedup is
+unchanged.
+
 ## Completion checklist
 
-- [x] Build 0 warnings, tests green — 230/230 → **289/289**
+- [x] Build 0 warnings, tests green — 230/230 → **316/316**
 - [ ] Manual verification checklist run by the user (TUI cannot be driven here)
 - [ ] Merge to `main`, remove worktree
 

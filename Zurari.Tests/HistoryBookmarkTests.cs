@@ -303,3 +303,98 @@ public class PaneDirectoryTests
         Assert.Equal("", Program.ResolvePaneDirectory(new Pane()));
     }
 }
+
+// bug3: 「いつ履歴に載るのか分からない」——←/→ での出入りが記録されていなかった。
+[Collection("GlobalStateTests")]
+public class HistoryRecordingTests
+{
+    [Fact]
+    public async Task ArrowRightIntoADirectory_RecordsIt()
+    {
+        string root = AsyncColumnLoadTests.MakeTempDir();
+        Directory.CreateDirectory(Path.Combine(root, "child"));
+        try
+        {
+            Program.ClearHistoryForTest();
+
+            Column rootCol = await Program.CreateColumnAsync(root);
+            if (rootCol.LoadingTask != null) await rootCol.LoadingTask;
+
+            var pane = new Pane();
+            pane.Columns.Add(rootCol);
+            pane.ActiveColumn = 0;
+            rootCol.Selected = rootCol.Entries.IndexOf("child/");
+            await Program.RebuildRightSideAsync(pane, 0);
+
+            await Program.MoveRightForTestAsync(pane);
+
+            Assert.Contains(Path.Combine(root, "child"), Program.HistoryForTest);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task ArrowLeftBackOut_RecordsTheParent()
+    {
+        string root = AsyncColumnLoadTests.MakeTempDir();
+        Directory.CreateDirectory(Path.Combine(root, "child"));
+        try
+        {
+            Column rootCol = await Program.CreateColumnAsync(root);
+            if (rootCol.LoadingTask != null) await rootCol.LoadingTask;
+
+            var pane = new Pane();
+            pane.Columns.Add(rootCol);
+            pane.ActiveColumn = 0;
+            rootCol.Selected = rootCol.Entries.IndexOf("child/");
+            await Program.RebuildRightSideAsync(pane, 0);
+            await Program.MoveRightForTestAsync(pane);
+
+            Program.ClearHistoryForTest();
+            Program.MoveLeftForTest(pane);
+
+            Assert.Contains(root, Program.HistoryForTest);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void CursorMovementWithinAColumn_RecordsNothing()
+    {
+        // 上下移動では記録しない —— 覗いただけのディレクトリで履歴が埋まらないように。
+        Program.ClearHistoryForTest();
+
+        var pane = new Pane();
+        var col = new Column("D:\test");
+        col.Entries.AddRange(new[] { "a/", "b/", "c/" });
+        col.DirectoriesCount = 3;
+        pane.Columns.Add(col);
+        pane.ActiveColumn = 0;
+
+        Program.MoveDownForTest(pane);
+        Program.MoveDownForTest(pane);
+        Program.MoveUpForTest(pane);
+
+        Assert.Empty(Program.HistoryForTest);
+    }
+
+    [Fact]
+    public void DriveListIsNeverRecorded()
+    {
+        // ::DRIVES:: は実パスではなくジャンプもできないので、履歴に入れても失敗するだけ。
+        Program.ClearHistoryForTest();
+        Program.RecordHistoryVisitForTest("::DRIVES::");
+        Assert.Empty(Program.HistoryForTest);
+    }
+
+    [Fact]
+    public void RevisitingAPath_MovesItToTheFrontWithoutDuplicating()
+    {
+        Program.ClearHistoryForTest();
+        Program.RecordHistoryVisitForTest("D:\a");
+        Program.RecordHistoryVisitForTest("D:\b");
+        Program.RecordHistoryVisitForTest("D:\a");
+
+        Assert.Equal(new[] { "D:\b", "D:\a" }, Program.HistoryForTest);
+    }
+}
