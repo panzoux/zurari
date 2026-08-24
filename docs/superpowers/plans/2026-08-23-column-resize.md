@@ -170,8 +170,9 @@ unchanged.
 ## Completion checklist
 
 - [x] Build 0 warnings, tests green — 230/230 → **316/316**
-- [ ] Manual verification checklist run by the user (TUI cannot be driven here)
-- [ ] Merge to `main`, remove worktree
+- [x] Manual verification checklist run by the user (TUI cannot be driven here)
+      — confirmed 2026-08-24, after three rounds of defects found and fixed
+- [x] Merge to `main`, remove worktree
 
 ## Manual verification checklist (for the user)
 
