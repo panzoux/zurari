@@ -5046,16 +5046,17 @@ static class Program
             return;
         }
 
-        // Ctrl+Enter: land here and exit (no open, no enter)
-        if (key.Key == ConsoleKey.Enter && (key.Modifiers & ConsoleModifiers.Control) != 0)
+        // Enter: land here and exit, whether on a file or a directory — never traverses
+        // (that's what → is for). This is how leap ends on a selected directory itself.
+        if (key.Key == ConsoleKey.Enter)
         {
             await ExitLeapModeAsync(pane, restoreCursor: false);
             return;
         }
 
-        // Enter / Right: enter dir, or select file and exit leap (no open — leap is for
-        // navigating, not launching; use Ctrl+Enter or exit leap first to open a file)
-        if (key.Key == ConsoleKey.Enter || key.Key == ConsoleKey.RightArrow)
+        // Right: enter dir, or select file and exit leap (no open — leap is for
+        // navigating, not launching; exit leap first to open a file)
+        if (key.Key == ConsoleKey.RightArrow)
         {
             if (col.Entries.Count == 0) return;
             string name = col.Entries[col.Selected];
