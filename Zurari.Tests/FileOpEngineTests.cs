@@ -104,6 +104,83 @@ public class FileOpEngineTests
     }
 
     [Fact]
+    public async Task CopyAsync_SourceDisappearsAfterOverwriteChoice_PreservesExistingDestination()
+    {
+        string root = NewTempDir();
+        try
+        {
+            string sourceDir = Directory.CreateDirectory(Path.Combine(root, "src")).FullName;
+            string destDir = Directory.CreateDirectory(Path.Combine(root, "dest")).FullName;
+            string source = Path.Combine(sourceDir, "a.txt");
+            string destination = Path.Combine(destDir, "a.txt");
+            File.WriteAllText(source, "new");
+            File.WriteAllText(destination, "old");
+
+            var result = await FileOpEngine.CopyAsync([source], destDir, new NullProgress(), _ =>
+            {
+                File.Delete(source);
+                return Task.FromResult<ConflictDecision?>(new(ConflictResolution.Overwrite));
+            }, CancellationToken.None);
+
+            Assert.Equal(1, result.Failed);
+            Assert.Equal("old", File.ReadAllText(destination));
+            Assert.Single(Directory.GetFileSystemEntries(destDir));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task MoveAsync_CancelledAfterOverwriteChoice_PreservesSourceAndDestination()
+    {
+        string root = NewTempDir();
+        try
+        {
+            string sourceDir = Directory.CreateDirectory(Path.Combine(root, "src")).FullName;
+            string destDir = Directory.CreateDirectory(Path.Combine(root, "dest")).FullName;
+            string source = Path.Combine(sourceDir, "a.txt");
+            string destination = Path.Combine(destDir, "a.txt");
+            File.WriteAllText(source, "new");
+            File.WriteAllText(destination, "old");
+            using var cts = new CancellationTokenSource();
+
+            var result = await FileOpEngine.MoveAsync([source], destDir, new NullProgress(), _ =>
+            {
+                cts.Cancel();
+                return Task.FromResult<ConflictDecision?>(new(ConflictResolution.Overwrite));
+            }, cts.Token);
+
+            Assert.True(result.WasCancelled);
+            Assert.Equal("new", File.ReadAllText(source));
+            Assert.Equal("old", File.ReadAllText(destination));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task CopyAsync_CannotReplaceDirectory_CleansUpOnlyStagedCopy()
+    {
+        string root = NewTempDir();
+        try
+        {
+            string sourceDir = Directory.CreateDirectory(Path.Combine(root, "src")).FullName;
+            string destDir = Directory.CreateDirectory(Path.Combine(root, "dest")).FullName;
+            string source = Path.Combine(sourceDir, "a.txt");
+            string destination = Directory.CreateDirectory(Path.Combine(destDir, "a.txt")).FullName;
+            string existingFile = Path.Combine(destination, "existing.txt");
+            File.WriteAllText(source, "new");
+            File.WriteAllText(existingFile, "old");
+
+            var result = await FileOpEngine.CopyAsync([source], destDir, new NullProgress(),
+                _ => Task.FromResult<ConflictDecision?>(new(ConflictResolution.Overwrite)), CancellationToken.None);
+
+            Assert.Equal(1, result.Failed);
+            Assert.Equal("old", File.ReadAllText(existingFile));
+            Assert.Empty(Directory.GetFiles(destDir));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task CopyAsync_Conflict_Skip_LeavesDestUnchanged()
     {
         string root = NewTempDir();

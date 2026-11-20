@@ -173,9 +173,9 @@ public class PaneSyncSwapTests
         try
         {
             Column colA = await Program.CreateColumnAsync(dirA);
-            if (colA.LoadingTask != null) await colA.LoadingTask;
+            await Program.CompleteColumnLoadAsync(colA);
             Column colB = await Program.CreateColumnAsync(dirB);
-            if (colB.LoadingTask != null) await colB.LoadingTask;
+            await Program.CompleteColumnLoadAsync(colB);
 
             var top = new Pane();
             top.Columns.Add(colA);
@@ -206,9 +206,9 @@ public class PaneSyncSwapTests
         try
         {
             Column colA = await Program.CreateColumnAsync(dirA);
-            if (colA.LoadingTask != null) await colA.LoadingTask;
+            await Program.CompleteColumnLoadAsync(colA);
             Column colB = await Program.CreateColumnAsync(dirB);
-            if (colB.LoadingTask != null) await colB.LoadingTask;
+            await Program.CompleteColumnLoadAsync(colB);
 
             var top = new Pane();
             top.Columns.Add(colA);
@@ -240,9 +240,9 @@ public class PaneSyncSwapTests
         try
         {
             Column colA = await Program.CreateColumnAsync(dir);
-            if (colA.LoadingTask != null) await colA.LoadingTask;
+            await Program.CompleteColumnLoadAsync(colA);
             Column colB = await Program.CreateColumnAsync(dir);
-            if (colB.LoadingTask != null) await colB.LoadingTask;
+            await Program.CompleteColumnLoadAsync(colB);
 
             var top = new Pane();
             top.Columns.Add(colA);
@@ -265,7 +265,7 @@ public class PaneSyncSwapTests
         try
         {
             Column col = await Program.CreateColumnAsync(dir);
-            if (col.LoadingTask != null) await col.LoadingTask;
+            await Program.CompleteColumnLoadAsync(col);
 
             var only = new Pane();
             only.Columns.Add(col);

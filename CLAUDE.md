@@ -1,6 +1,6 @@
 # zurari (zrr)
 
-Console dual-pane file manager, C#/.NET 8, single file `Program.cs`. Successor
+Console dual-pane file manager, C#/.NET 8, with the entry point in `Program.cs`. Successor
 to `../console-column-file-manager` (predecessor, superseded — don't edit for
 new work); `../twf` is an earlier Terminal.Gui prototype with reference
 JobManager/conflict-resolution/throttled-reload code worth checking before

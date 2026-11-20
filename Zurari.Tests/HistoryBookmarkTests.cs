@@ -318,7 +318,7 @@ public class HistoryRecordingTests
             Program.ClearHistoryForTest();
 
             Column rootCol = await Program.CreateColumnAsync(root);
-            if (rootCol.LoadingTask != null) await rootCol.LoadingTask;
+            await Program.CompleteColumnLoadAsync(rootCol);
 
             var pane = new Pane();
             pane.Columns.Add(rootCol);
@@ -341,7 +341,7 @@ public class HistoryRecordingTests
         try
         {
             Column rootCol = await Program.CreateColumnAsync(root);
-            if (rootCol.LoadingTask != null) await rootCol.LoadingTask;
+            await Program.CompleteColumnLoadAsync(rootCol);
 
             var pane = new Pane();
             pane.Columns.Add(rootCol);

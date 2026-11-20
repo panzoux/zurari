@@ -10,7 +10,7 @@ public class CreateDirectoryIntegrationTests
         try
         {
             Column col = await Program.CreateColumnAsync(dir);
-            if (col.LoadingTask != null) await col.LoadingTask;
+            await Program.CompleteColumnLoadAsync(col);
 
             var pane = new Pane();
             pane.Columns.Add(col);
@@ -34,7 +34,7 @@ public class CreateDirectoryIntegrationTests
         try
         {
             Column col = await Program.CreateColumnAsync(dir);
-            if (col.LoadingTask != null) await col.LoadingTask;
+            await Program.CompleteColumnLoadAsync(col);
 
             var pane = new Pane();
             pane.Columns.Add(col);
@@ -54,7 +54,7 @@ public class CreateDirectoryIntegrationTests
         try
         {
             Column col = await Program.CreateColumnAsync(dir);
-            if (col.LoadingTask != null) await col.LoadingTask;
+            await Program.CompleteColumnLoadAsync(col);
 
             var pane = new Pane();
             pane.Columns.Add(col);
@@ -75,7 +75,7 @@ public class CreateDirectoryIntegrationTests
         try
         {
             Column col = await Program.CreateColumnAsync(dir);
-            if (col.LoadingTask != null) await col.LoadingTask;
+            await Program.CompleteColumnLoadAsync(col);
 
             var pane = new Pane();
             pane.Columns.Add(col);

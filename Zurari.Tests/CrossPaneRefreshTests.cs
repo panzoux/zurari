@@ -11,12 +11,12 @@ public class CrossPaneRefreshTests
         try
         {
             Column colA = await Program.CreateColumnAsync(dir);
-            if (colA.LoadingTask != null) await colA.LoadingTask;
+            await Program.CompleteColumnLoadAsync(colA);
             var paneA = new Pane();
             paneA.Columns.Add(colA);
 
             Column colB = await Program.CreateColumnAsync(dir);
-            if (colB.LoadingTask != null) await colB.LoadingTask;
+            await Program.CompleteColumnLoadAsync(colB);
             var paneB = new Pane();
             paneB.Columns.Add(colB);
 
@@ -28,7 +28,7 @@ public class CrossPaneRefreshTests
             await Program.RefreshOtherPanesAsync(paneA, dir);
 
             Column refreshedB = paneB.Columns[0];
-            if (refreshedB.LoadingTask != null) await refreshedB.LoadingTask;
+            await Program.CompleteColumnLoadAsync(refreshedB);
             Assert.Contains("NewFolder/", refreshedB.Entries);
         }
         finally
@@ -46,7 +46,7 @@ public class CrossPaneRefreshTests
         try
         {
             Column colA = await Program.CreateColumnAsync(dir);
-            if (colA.LoadingTask != null) await colA.LoadingTask;
+            await Program.CompleteColumnLoadAsync(colA);
             var paneA = new Pane();
             paneA.Columns.Add(colA);
             Program.State.Panes = new List<Pane> { paneA };
@@ -73,12 +73,12 @@ public class CrossPaneRefreshTests
         try
         {
             Column colA = await Program.CreateColumnAsync(dirA);
-            if (colA.LoadingTask != null) await colA.LoadingTask;
+            await Program.CompleteColumnLoadAsync(colA);
             var paneA = new Pane();
             paneA.Columns.Add(colA);
 
             Column colB = await Program.CreateColumnAsync(dirB);
-            if (colB.LoadingTask != null) await colB.LoadingTask;
+            await Program.CompleteColumnLoadAsync(colB);
             var paneB = new Pane();
             paneB.Columns.Add(colB);
             Column originalColumnBInstance = paneB.Columns[0];

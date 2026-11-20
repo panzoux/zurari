@@ -1,10 +1,6 @@
-// Build:
-// dotnet new console -n ColumnFileManager
-// Replace Program.cs with this file
-// dotnet run
+// Run from the repository root: dotnet run --project Zurari.csproj
 //
 // Tested: .NET 8 / Windows 10+ / macOS 12+
-// Single file, no external dependencies, LINQ-free
 //
 // Features:
 // - Column-based file browser (Finder-like)
@@ -34,6 +30,7 @@ using System.Threading.Tasks;
 using System.ComponentModel;
 using System.Security.Cryptography;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 internal enum FileCategory { Text, Image, Video, Audio, Archive, Executable, Pdf, Drive, Binary }
 
@@ -634,127 +631,111 @@ static class FileOpEngine
         return 1;
     }
 
-    // Conflict check happens immediately before the copy/move attempt (not a pre-scan). A TOCTOU
-    // race (external process creates the same-name file between the check and the actual write)
-    // surfaces as an IOException from overwrite:false, which is folded into the same onConflict
-    // callback below rather than handled by a dedicated exclusion mechanism.
     static async Task<(ItemOutcome, long, string? Error)> CopyOrMoveFileAsync(
         string src, string dest, IFileOpProgress progress,
         Func<string, Task<ConflictDecision?>> onConflict, CancellationToken ct, bool isMove)
     {
         string finalDest = dest;
-        bool overwrite = false;
-
-        if (File.Exists(finalDest) || Directory.Exists(finalDest))
-        {
-            var decision = await onConflict(Path.GetFileName(finalDest));
-            if (decision == null)
-                return (ItemOutcome.Cancelled, 0, null);
-
-            if (decision.Resolution == ConflictResolution.Skip)
-            {
-                progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, isMove ? "MOVE" : "COPY", "SKIP", src, finalDest, ""));
-                return (ItemOutcome.Skipped, 0, null);
-            }
-            if (decision.Resolution == ConflictResolution.Rename)
-                finalDest = Path.Combine(Path.GetDirectoryName(finalDest) ?? "", decision.NewName ?? Path.GetFileName(finalDest));
-            else
-                overwrite = true;
-        }
+        string operation = isMove ? "MOVE" : "COPY";
+        string? stagedCopy = null;
 
         try
         {
-            long? bytes = isMove
-                ? await MoveWithConflictRetryAsync(src, finalDest, overwrite, onConflict, ct)
-                : await CopyWithConflictRetryAsync(src, finalDest, overwrite, onConflict, ct);
-            if (bytes == null)
+            string destDir = Path.GetDirectoryName(dest) ?? "";
+            long bytes = 0;
+            bool sourcePrepared = false;
+            while (true)
             {
-                progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, isMove ? "MOVE" : "COPY", "SKIP", src, finalDest, ""));
-                return (ItemOutcome.Skipped, 0, null);
+                ct.ThrowIfCancellationRequested();
+                bool overwrite = false;
+                if (File.Exists(finalDest) || Directory.Exists(finalDest))
+                {
+                    var decision = await onConflict(Path.GetFileName(finalDest));
+                    ct.ThrowIfCancellationRequested();
+                    if (decision == null)
+                        throw new OperationCanceledException(ct);
+                    if (decision.Resolution == ConflictResolution.Skip)
+                    {
+                        progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, operation, "SKIP", src, finalDest, ""));
+                        return (ItemOutcome.Skipped, 0, null);
+                    }
+                    if (decision.Resolution == ConflictResolution.Rename)
+                    {
+                        string? name = decision.NewName;
+                        if (string.IsNullOrEmpty(name) || name is "." or ".." ||
+                            name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || Path.IsPathRooted(name))
+                            throw new IOException("The replacement name must be a valid file name.");
+                        string renamedDest = Path.Combine(destDir, name);
+                        if (renamedDest == finalDest)
+                            throw new IOException("The replacement name must differ from the conflicting name.");
+                        if (PathOverlapHelper.PathsOverlapSafe(src, renamedDest))
+                            throw new IOException("destination is the item itself or inside it");
+                        finalDest = renamedDest;
+                        continue;
+                    }
+                    overwrite = true;
+                }
+
+                if (!sourcePrepared)
+                {
+                    if (isMove)
+                    {
+                        bytes = new FileInfo(src).Length;
+                    }
+                    else
+                    {
+                        string tempPath = Path.Combine(destDir, $".zrr-{Guid.NewGuid():N}.tmp");
+                        await using var source = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.Read, CopyBufferSize, CopyFileOptions);
+                        await using var temporary = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, CopyBufferSize, CopyFileOptions);
+                        stagedCopy = tempPath;
+                        await source.CopyToAsync(temporary, CopyBufferSize, ct);
+                        bytes = temporary.Length;
+                    }
+                    sourcePrepared = true;
+                }
+
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    File.Move(stagedCopy ?? src, finalDest, overwrite);
+                }
+                catch (IOException ex) when (!overwrite && IsDestinationCollision(ex, finalDest))
+                {
+                    continue;
+                }
+
+                stagedCopy = null;
+                progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, operation, "OK", src, finalDest, ""));
+                return (ItemOutcome.Succeeded, bytes, null);
             }
-            progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, isMove ? "MOVE" : "COPY", "OK", src, finalDest, ""));
-            return (ItemOutcome.Succeeded, bytes.Value, null);
         }
         catch (OperationCanceledException)
         {
-            TryDeletePartialFile(finalDest);
-            progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, isMove ? "MOVE" : "COPY", "CANCEL", src, finalDest, ""));
+            progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, operation, "CANCEL", src, finalDest, ""));
             return (ItemOutcome.Cancelled, 0, null);
         }
         catch (Exception ex)
         {
-            TryDeletePartialFile(finalDest);
-            progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, isMove ? "MOVE" : "COPY", "FAIL", src, finalDest, ex.Message));
+            progress.ReportItemResult(new OpLogEntry(DateTime.Now, null, operation, "FAIL", src, finalDest, ex.Message));
             return (ItemOutcome.Failed, 0, ex.Message);
         }
-    }
-
-    // Returns null when the nested conflict retry resolves to Skip (caller must report Skipped, not Succeeded).
-    static async Task<long?> MoveWithConflictRetryAsync(
-        string src, string dest, bool overwrite, Func<string, Task<ConflictDecision?>> onConflict, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        try
+        finally
         {
-            File.Move(src, dest, overwrite);
-            return new FileInfo(dest) is { Exists: true } fi ? fi.Length : 0;
-        }
-        catch (IOException) when (!overwrite)
-        {
-            var decision = await onConflict(Path.GetFileName(dest));
-            if (decision == null) throw new OperationCanceledException(ct);
-            if (decision.Resolution == ConflictResolution.Skip) return null;
-
-            string finalDest = decision.Resolution == ConflictResolution.Rename
-                ? Path.Combine(Path.GetDirectoryName(dest) ?? "", decision.NewName ?? Path.GetFileName(dest))
-                : dest;
-            File.Move(src, finalDest, decision.Resolution == ConflictResolution.Overwrite);
-            return new FileInfo(finalDest) is { Exists: true } fi2 ? fi2.Length : 0;
+            if (stagedCopy != null)
+            {
+                try { File.Delete(stagedCopy); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
         }
     }
 
-    // Returns null when the nested conflict retry resolves to Skip (caller must report Skipped, not Succeeded).
-    static async Task<long?> CopyWithConflictRetryAsync(
-        string src, string dest, bool overwrite, Func<string, Task<ConflictDecision?>> onConflict, CancellationToken ct)
+    // EEXIST on Unix, ERROR_FILE_EXISTS and ERROR_ALREADY_EXISTS on Windows.
+    static bool IsDestinationCollision(IOException error, string destination)
     {
-        FileMode mode = overwrite ? FileMode.Create : FileMode.CreateNew;
-        try
-        {
-            return await StreamCopyAsync(src, dest, mode, ct);
-        }
-        catch (IOException) when (!overwrite)
-        {
-            var decision = await onConflict(Path.GetFileName(dest));
-            if (decision == null) throw new OperationCanceledException(ct);
-            if (decision.Resolution == ConflictResolution.Skip) return null;
-
-            string finalDest = decision.Resolution == ConflictResolution.Rename
-                ? Path.Combine(Path.GetDirectoryName(dest) ?? "", decision.NewName ?? Path.GetFileName(dest))
-                : dest;
-            FileMode retryMode = decision.Resolution == ConflictResolution.Overwrite ? FileMode.Create : FileMode.CreateNew;
-            return await StreamCopyAsync(src, finalDest, retryMode, ct);
-        }
-    }
-
-    static async Task<long> StreamCopyAsync(string src, string dest, FileMode mode, CancellationToken ct)
-    {
-        long total = 0;
-        using var sourceStream = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.Read, CopyBufferSize, CopyFileOptions);
-        using var destStream = new FileStream(dest, mode, FileAccess.Write, FileShare.None, CopyBufferSize, CopyFileOptions);
-        byte[] buffer = new byte[CopyBufferSize];
-        int bytesRead;
-        while ((bytesRead = await sourceStream.ReadAsync(buffer, 0, buffer.Length, ct)) > 0)
-        {
-            await destStream.WriteAsync(buffer, 0, bytesRead, ct);
-            total += bytesRead;
-        }
-        return total;
-    }
-
-    static void TryDeletePartialFile(string path)
-    {
-        try { if (File.Exists(path)) File.Delete(path); }
-        catch { }
+        int code = error.HResult & 0xffff;
+        bool fileExistsError = OperatingSystem.IsWindows() ? code is 80 or 183 : code == 17;
+        return fileExistsError && (File.Exists(destination) || Directory.Exists(destination));
     }
 
     static async Task<(int Succeeded, int Skipped, int Failed, string? FirstError, long Bytes, bool WasCancelled)> CopyOrMoveDirectoryAsync(
@@ -1058,8 +1039,6 @@ sealed class Column
     public int Selected;
     public int ScrollOffset;
     public string? RestoreTo;
-    public Dictionary<string, List<string>> CachedChildren;
-    public DateTime CachedTime;
     public HashSet<string> Marked;
 
     // 表示幅(セル数)。Shift+←/→ でカーソル位置のカラムだけを伸縮させる。
@@ -1069,10 +1048,10 @@ sealed class Column
 
     // Loading state for async operations
     public bool IsLoading { get; set; }
-    public int EntriesRead { get; set; }
+    public int EntriesRead => Load?.EntriesRead ?? Entries.Count;
     public int DirectoriesCount { get; set; }
     public CancellationTokenSource? ReadCts { get; set; }
-    public Task? LoadingTask { get; set; }
+    public DirectoryColumnLoad? Load { get; set; }
     public bool NeedsMarkReconcile;
 
     public Column(string path)
@@ -1081,11 +1060,8 @@ sealed class Column
         Entries = new List<string>();
         Selected = 0;
         ScrollOffset = 0;
-        CachedChildren = new Dictionary<string, List<string>>();
-        CachedTime = DateTime.UtcNow;
         Marked = new HashSet<string>(StringComparer.Ordinal);
         IsLoading = false;
-        EntriesRead = 0;
         DirectoriesCount = 0;
     }
 }
@@ -1665,12 +1641,14 @@ static class ListFilter
         if (string.IsNullOrEmpty(query))
             return new List<string>(allItems);
 
+        var matches = SearchHelper.CreateMatcher(query, regexMode, migemo);
         var result = new List<string>();
-        foreach (string item in allItems)
+        try
         {
-            if (SearchHelper.MatchesSearchQuery(item, query, regexMode, migemo))
-                result.Add(item);
+            foreach (string item in allItems)
+                if (matches(item)) result.Add(item);
         }
+        catch (RegexMatchTimeoutException) { }
         return result;
     }
 
@@ -1690,10 +1668,15 @@ sealed class SearchState
     public int MatchIndex;       // index into Matches of current highlighted match
     public bool RegexMode;       // false = literal/migemo, true = raw regex
     public CancellationTokenSource? SearchCts;
+    public SearchScan? Pending;
+    public bool PatternTimedOut;
     public bool NeedsRecompute;  // set by keystroke, consumed by debounce tick
     public DateTime LastInputTime;
     public bool SearchDone;      // false while async scan in progress
 }
+
+sealed record SearchScan(Column Column, List<string> Entries, Task<SearchScanResult> Completion);
+sealed record SearchScanResult(List<int> Matches, bool PatternTimedOut);
 
 sealed class LeapState
 {
@@ -1731,7 +1714,7 @@ sealed class MigemoProvider : IDisposable
     static extern void migemo_release(IntPtr h, IntPtr result);
 
     IntPtr _handle = IntPtr.Zero;
-    bool _disposed;
+    readonly object _handleLock = new();
 
     public bool DllLoaded { get; private set; }   // true if migemo.dll was found
     public bool IsAvailable { get; private set; } // true if DLL + dict both loaded
@@ -1780,31 +1763,33 @@ sealed class MigemoProvider : IDisposable
 
     public string ExpandPattern(string romaji)
     {
-        if (!IsAvailable || string.IsNullOrEmpty(romaji)) return romaji;
-        try
+        lock (_handleLock)
         {
-            byte[] queryBytes = System.Text.Encoding.UTF8.GetBytes(romaji + '\0');
-            IntPtr ptr = migemo_query(_handle, queryBytes);
-            if (ptr == IntPtr.Zero) return romaji;
+            if (_handle == IntPtr.Zero || string.IsNullOrEmpty(romaji)) return romaji;
             try
             {
-                string? result = System.Runtime.InteropServices.Marshal.PtrToStringUTF8(ptr);
-                return result ?? romaji;
+                byte[] queryBytes = System.Text.Encoding.UTF8.GetBytes(romaji + '\0');
+                IntPtr ptr = migemo_query(_handle, queryBytes);
+                if (ptr == IntPtr.Zero) return romaji;
+                try
+                {
+                    string? result = System.Runtime.InteropServices.Marshal.PtrToStringUTF8(ptr);
+                    return result ?? romaji;
+                }
+                finally
+                {
+                    migemo_release(_handle, ptr);
+                }
             }
-            finally
-            {
-                migemo_release(_handle, ptr);
-            }
+            catch { return romaji; }
         }
-        catch { return romaji; }
     }
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-        if (_handle != IntPtr.Zero)
+        lock (_handleLock)
         {
+            if (_handle == IntPtr.Zero) return;
             try { migemo_close(_handle); } catch { }
             _handle = IntPtr.Zero;
         }
@@ -1813,24 +1798,55 @@ sealed class MigemoProvider : IDisposable
 
 static class SearchHelper
 {
+    internal static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(100);
+
     public static bool MatchesSearchQuery(string entry, string query, bool regexMode, MigemoProvider? migemo)
     {
-        if (string.IsNullOrEmpty(query)) return false;
+        try { return CreateMatcher(query, regexMode, migemo)(entry); }
+        catch (RegexMatchTimeoutException) { return false; }
+    }
 
-        if (regexMode)
+    internal static Func<string, bool> CreateMatcher(string query, bool regexMode, MigemoProvider? migemo)
+    {
+        if (string.IsNullOrEmpty(query)) return _ => false;
+
+        if (regexMode || migemo?.IsAvailable == true)
         {
-            try { return System.Text.RegularExpressions.Regex.IsMatch(entry, query, System.Text.RegularExpressions.RegexOptions.IgnoreCase); }
-            catch (System.Text.RegularExpressions.RegexParseException) { return false; }
+            string pattern = regexMode ? query : migemo!.ExpandPattern(query);
+            try
+            {
+                var regex = new Regex(pattern, RegexOptions.IgnoreCase, RegexTimeout);
+                return regex.IsMatch;
+            }
+            catch (RegexParseException)
+            {
+                if (regexMode) return _ => false;
+            }
         }
 
-        if (migemo?.IsAvailable == true)
-        {
-            string pattern = migemo.ExpandPattern(query);
-            try { return System.Text.RegularExpressions.Regex.IsMatch(entry, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase); }
-            catch { return entry.Contains(query, StringComparison.OrdinalIgnoreCase); }
-        }
+        return entry => entry.Contains(query, StringComparison.OrdinalIgnoreCase);
+    }
 
-        return entry.Contains(query, StringComparison.OrdinalIgnoreCase);
+    internal static SearchScanResult Scan(
+        IReadOnlyList<string> entries, string query, bool regexMode, MigemoProvider? migemo, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var matches = new List<int>();
+        var isMatch = CreateMatcher(query, regexMode, migemo);
+        try
+        {
+            for (int i = 0; i < entries.Count; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (isMatch(entries[i].TrimEnd('/')))
+                    matches.Add(i);
+            }
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return new SearchScanResult([], true);
+        }
+        return new SearchScanResult(matches, false);
     }
 
     public static int FindNearestMatchIndex(List<int> matches, int anchor)
@@ -1856,7 +1872,13 @@ static class SearchHelper
 
         string countPart;
         int countLen;
-        if (search.Query.Length == 0)
+        if (search.PatternTimedOut)
+        {
+            const string timeout = "(pattern timed out)";
+            countPart = $"\x1b[31m{timeout}{reset}";
+            countLen = timeout.Length;
+        }
+        else if (search.Query.Length == 0)
         {
             countPart = "";
             countLen = 0;
@@ -2373,7 +2395,7 @@ internal static class PreviewLoader
             }
 
             var (pixelLines, pixelWidth) = await Task.Run(
-                () => ImageSharpProxy.LoadFrameAndRender(cachePath, pixelCols, pixelRows, ct), ct);
+                () => RasterPreview.LoadAndRender(cachePath, pixelCols, pixelRows, ct), ct);
 
             ct.ThrowIfCancellationRequested();
             return meta with { PixelLines = pixelLines, PixelWidth = pixelWidth };
@@ -2647,7 +2669,7 @@ internal static class PreviewLoader
         // Always get metadata first — InfoLine (dimensions + size) comes from LoadImageMeta
         var meta = LoadImageMeta(filePath, fileType, modified, width);
 
-        // SVG and ICO cannot be rasterized by ImageSharp (no bundled rasterizer)
+        // SVG and ICO use metadata-only previews.
         if (fileType.Label == "SVG Image" || fileType.Label == "Icon")
             return meta;
 
@@ -2661,7 +2683,7 @@ internal static class PreviewLoader
             int pixelRows = (bodyHeight - 1) * 2;
 
             var (pixelLines, pixelWidth) = await Task.Run(
-                () => ImageSharpProxy.LoadAndRender(filePath, pixelCols, pixelRows, ct), ct);
+                () => RasterPreview.LoadAndRender(filePath, pixelCols, pixelRows, ct), ct);
 
             ct.ThrowIfCancellationRequested();
             return meta with { PixelLines = pixelLines, PixelWidth = pixelWidth };
@@ -2901,7 +2923,6 @@ static class Program
     // Floor for a resized column: 2-char prefix + separator + a readable name fragment.
     internal const int MinColumnWidth = 10;
     internal const int ColumnWidthStep = 2;
-    const int CacheExpireMs = 2000;
     const int MaxPathLength = 100;
     const int NavigationDebounceMs = 300;
     const int MinPaneHeight = 4; // ヘッダ1行 + 本文3行
@@ -2920,7 +2941,6 @@ static class Program
     static int _missingEntrySelected = -1;
     static readonly RedrawGate _redrawGate = new RedrawGate();
     static long _framesBuilt; // diagnostic: printed on exit when ZRR_DEBUG_FRAMES is set
-    static readonly object _searchLock = new object();
     static readonly object _dialogQueueLock = new object();
     static readonly Queue<Action> _dialogRequestQueue = new();
     static readonly Dictionary<int, ConflictResolution> _jobStickyChoice = new();
@@ -2986,6 +3006,17 @@ static class Program
                 await ProcessJobCompletionsAsync();
                 await RefreshActiveJobColumnsAsync();
 
+                foreach (Pane pane in State.Panes)
+                {
+                    ProcessColumnLoads(pane);
+                    if (State.Dialog == null && ApplyCompletedSearch(pane))
+                    {
+                        UpdateHorizontalScroll(pane);
+                        await RebuildRightSideAsync(pane, pane.ActiveColumn);
+                        if (pane.Preview.IsVisible) StartPreviewLoad(pane);
+                    }
+                }
+
                 if (_redrawGate.ShouldDraw(UiActivityInProgress(FocusedPane)) || State.PrevFrame == null)
                     Draw();
 
@@ -3004,13 +3035,9 @@ static class Program
                     }
                     else if (State.Dialog == null && pane.Search.Active
                         && pane.Search.NeedsRecompute
-                        && (DateTime.UtcNow - pane.Search.LastInputTime).TotalMilliseconds >= 300)
+                        && (DateTime.UtcNow - pane.Search.LastInputTime).TotalMilliseconds >= NavigationDebounceMs)
                     {
-                        await RecomputeMatchesAsync(pane);
-                        UpdateHorizontalScroll(pane);
-                        await RebuildRightSideAsync(pane, pane.ActiveColumn);
-                        if (pane.Preview.IsVisible) StartPreviewLoad(pane);
-                        _redrawGate.Request();
+                        StartSearch(pane);
                     }
                     else if (State.Dialog is JobListDialogState openJobList
                         && (DateTime.UtcNow - _lastJobPollTime).TotalMilliseconds >= 100)
@@ -3028,7 +3055,6 @@ static class Program
                         {
                             await ProcessPendingNavigationAsync(p);
                             await ExtendRightSideIfReadyAsync(p);
-                            ProcessPendingMarkReconciles(p);
                             await RecoverStaleLeapFilterAsync(p);
                         }
                     }
@@ -3392,7 +3418,7 @@ static class Program
             case ConsoleKey.L:
                 if ((key.Modifiers & ConsoleModifiers.Control) != 0)
                 {
-                    RefreshCurrent(pane);
+                    await RefreshCurrentAsync(pane, waitForLoad: false);
                 }
                 else if ((key.Modifiers & ConsoleModifiers.Shift) != 0)
                 {
@@ -3467,7 +3493,7 @@ static class Program
                 break;
 
             case ConsoleKey.F5:
-                RefreshCurrent(pane);
+                await RefreshCurrentAsync(pane, waitForLoad: false);
                 break;
 
             case ConsoleKey.PageUp:
@@ -3781,13 +3807,6 @@ static class Program
         }
     }
 
-    // NOTE: Column.CachedChildren/CachedTime are not actually consulted anywhere as a cache-hit
-    // check (verified via full-file search — CreateColumn/CreateColumnAsync always re-list from
-    // disk unconditionally; the only other writer, RefreshCurrent(), clears them purely as
-    // bookkeeping before discarding the Column). So "invalidating" them here would refresh nothing.
-    // The real mechanism (mirroring RefreshCurrentAsync) is: save cursor memory for the path, build
-    // a brand-new Column via CreateColumnAsync (which re-lists from disk and restores the cursor via
-    // ApplyCursorMemory/SeekRestoreTo), carry over Marked state, then swap it into the pane.
     internal static async Task RefreshPaneNowAsync(Pane pane, HashSet<string>? onlyDirs = null)
     {
         int deepestAffected = -1;
@@ -3801,10 +3820,9 @@ static class Program
             Column refreshed = await CreateColumnAsync(current.Path);
             refreshed.Width = current.Width;
             refreshed.Marked = current.Marked;
-            if (refreshed.LoadingTask != null)
+            if (refreshed.IsLoading)
             {
-                // Reconcile only once entries are loaded — and on the sequential main-loop
-                // thread (idle tick), never in parallel with Spacebar mark toggling.
+                // Reconcile on the UI loop once the complete listing becomes available.
                 refreshed.NeedsMarkReconcile = true;
             }
             else
@@ -3813,6 +3831,7 @@ static class Program
             }
 
             pane.Columns[i] = refreshed;
+            current.ReadCts?.Cancel();
             deepestAffected = i;
         }
         if (deepestAffected < 0) deepestAffected = 0;
@@ -3876,165 +3895,68 @@ static class Program
         }
 
         column.IsLoading = true;
-        column.EntriesRead = 0;
-        column.DirectoriesCount = 0;
         column.ReadCts = new CancellationTokenSource();
-        CancellationToken ct = column.ReadCts.Token;
         ApplyCursorMemory(column);
 
-        column.LoadingTask = Task.Run(async () =>
-        {
-            try
-            {
-                if (!IsValidPath(path)) return;
-
-                int visibleHeight = SafeWindowHeight() - 3;
-                int bufferSize = Math.Max(100, visibleHeight + 20);
-
-                List<string> dirs = new List<string>();
-                List<string> files = new List<string>();
-
-                // Read directories first (non-blocking enumeration)
-                try
-                {
-                    foreach (var dir in Directory.EnumerateDirectories(path))
-                    {
-                        ct.ThrowIfCancellationRequested();
-                        dirs.Add(dir);
-                        if (dirs.Count >= bufferSize)
-                            break;
-                    }
-                    dirs.Sort(StringComparer.OrdinalIgnoreCase);
-                    column.DirectoriesCount = dirs.Count;
-
-                    // Add to entries with "/" suffix
-                    foreach (var dir in dirs)
-                    {
-                        column.Entries.Add(Path.GetFileName(dir) + "/");
-                        column.EntriesRead++;
-                    }
-                }
-                catch
-                {
-                    // Permission denied or other errors
-                }
-
-                // Read files (up to remaining buffer)
-                int remainingBuffer = bufferSize - dirs.Count;
-                try
-                {
-                    foreach (var file in Directory.EnumerateFiles(path))
-                    {
-                        ct.ThrowIfCancellationRequested();
-                        files.Add(file);
-                        column.EntriesRead++;
-                        if (files.Count >= remainingBuffer)
-                            break;
-                    }
-                    files.Sort(StringComparer.OrdinalIgnoreCase);
-
-                    // Add to entries
-                    foreach (var file in files)
-                    {
-                        column.Entries.Add(Path.GetFileName(file));
-                    }
-                }
-                catch
-                {
-                    // Permission denied or other errors
-                }
-
-                // Continue reading rest in background
-                if (!ct.IsCancellationRequested)
-                {
-                    await Task.Run(() =>
-                    {
-                        try
-                        {
-                            List<string> restDirs = new List<string>();
-                            int count = 0;
-                            foreach (var dir in Directory.EnumerateDirectories(path))
-                            {
-                                if (ct.IsCancellationRequested)
-                                    return;
-                                if (count >= dirs.Count)
-                                {
-                                    restDirs.Add(dir);
-                                }
-                                count++;
-                            }
-
-                            List<string> restFiles = new List<string>();
-                            count = 0;
-                            foreach (var file in Directory.EnumerateFiles(path))
-                            {
-                                if (ct.IsCancellationRequested)
-                                    return;
-                                if (count >= files.Count)
-                                {
-                                    restFiles.Add(file);
-                                }
-                                count++;
-                            }
-
-                            restDirs.Sort(StringComparer.OrdinalIgnoreCase);
-                            restFiles.Sort(StringComparer.OrdinalIgnoreCase);
-
-                            foreach (var dir in restDirs)
-                            {
-                                if (ct.IsCancellationRequested)
-                                    return;
-                                column.Entries.Add(Path.GetFileName(dir) + "/");
-                                column.EntriesRead++;
-                            }
-
-                            foreach (var file in restFiles)
-                            {
-                                if (ct.IsCancellationRequested)
-                                    return;
-                                column.Entries.Add(Path.GetFileName(file));
-                                column.EntriesRead++;
-                            }
-                        }
-                        catch
-                        {
-                            // Permission denied or other errors
-                        }
-                    });
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                // Expected when navigating away
-            }
-            finally
-            {
-                // Add placeholder if folder is empty (allows cursor display and future file creation)
-                if (column.Entries.Count == 0)
-                {
-                    column.Entries.Add("<No file>");
-                }
-                column.IsLoading = false;
-                SeekRestoreTo(column);
-                _redrawGate.Request();
-            }
-        });
-
-        column.CachedTime = DateTime.UtcNow;
+        int initialSize = Math.Max(100, SafeWindowHeight() - 3 + 20);
+        column.Load = new DirectoryColumnLoad(path, initialSize, column.ReadCts.Token);
         return Task.FromResult(column);
     }
 
-    static bool IsValidPath(string path)
+    internal static async Task CompleteColumnLoadAsync(Column column)
     {
-        try
+        if (column.Load != null)
         {
-            DirectoryInfo di = new DirectoryInfo(path);
-            return di.Exists;
+            await column.Load.Completion;
+            ApplyAvailableColumnLoad(column);
         }
-        catch
-        {
+    }
+
+    internal static bool ApplyAvailableColumnLoad(Column column)
+    {
+        if (column.Load is not { } load)
             return false;
+
+        bool complete = load.Completion.IsCompletedSuccessfully;
+        DirectoryColumnSnapshot? snapshot = complete ? load.Completion.Result : load.Initial;
+        if (snapshot == null || ReferenceEquals(column.Entries, snapshot.Entries))
+            return false;
+
+        column.Entries = snapshot.Entries;
+        column.DirectoriesCount = snapshot.DirectoryCount;
+        if (complete)
+        {
+            column.IsLoading = false;
+            column.Load = null;
+            column.ReadCts?.Dispose();
+            column.ReadCts = null;
+            SeekRestoreTo(column);
         }
+        return true;
+    }
+
+    static void ProcessColumnLoads(Pane pane)
+    {
+        for (int i = 0; i < pane.Columns.Count; i++)
+        {
+            if (!ApplyAvailableColumnLoad(pane.Columns[i]))
+                continue;
+
+            _redrawGate.Request();
+            if (i != pane.ActiveColumn)
+                continue;
+
+            if (pane.Search.Active && pane.Search.Query.Length > 0)
+                InvalidateSearch(pane.Search);
+
+            if (pane.Leap.Active)
+            {
+                // Published batches keep existing entry indices stable.
+                pane.Leap.NeedsRecompute = true;
+            }
+        }
+        if (State.Dialog == null)
+            ProcessPendingMarkReconciles(pane);
     }
 
     // Resolves symlinks/junctions to their real target for cycle detection; returns the
@@ -4129,7 +4051,7 @@ static class Program
         }
     }
 
-    // Runs on the idle tick (sequential with all mark mutation): finishes the deferred
+    // Runs on the UI loop (sequential with all mark mutation): finishes the deferred
     // mark reconciliation for columns whose reload has completed.
     internal static void ProcessPendingMarkReconciles(Pane pane)
     {
@@ -4534,7 +4456,7 @@ static class Program
             // propagate. Build the refreshed column directly and set RestoreTo on it instead.
             Column refreshed = await CreateColumnAsync(col.Path);
             refreshed.Width = col.Width;
-            if (refreshed.LoadingTask != null) await refreshed.LoadingTask;
+            await CompleteColumnLoadAsync(refreshed);
             refreshed.RestoreTo = isDir ? newName + "/" : newName;
             SeekRestoreTo(refreshed);
             refreshed.Marked = col.Marked;
@@ -4621,7 +4543,7 @@ static class Program
         {
             Column refreshed = await CreateColumnAsync(col.Path);
             refreshed.Width = col.Width;
-            if (refreshed.LoadingTask != null) await refreshed.LoadingTask;
+            await CompleteColumnLoadAsync(refreshed);
             refreshed.RestoreTo = name + "/";
             SeekRestoreTo(refreshed);
             refreshed.Marked = col.Marked;
@@ -4875,16 +4797,7 @@ static class Program
         _missingEntrySelected = col.Selected;
     }
 
-    static void RefreshCurrent(Pane pane)
-    {
-        Column c = pane.Columns[pane.ActiveColumn];
-        c.CachedChildren.Clear();
-        c.CachedTime = DateTime.UtcNow.AddMilliseconds(-CacheExpireMs - 1);
-        c.ReadCts?.Cancel();
-        _ = RefreshCurrentAsync(pane);
-    }
-
-    static async Task RefreshCurrentAsync(Pane pane)
+    static async Task RefreshCurrentAsync(Pane pane, bool waitForLoad = true)
     {
         Column current = pane.Columns[pane.ActiveColumn];
         string currentPath = current.Path;
@@ -4893,62 +4806,92 @@ static class Program
 
         Column refreshed = await CreateColumnAsync(currentPath);
         refreshed.Width = current.Width;
-        if (refreshed.LoadingTask != null)
-            await refreshed.LoadingTask;
 
         // マーク状態は Column インスタンスではなく「そのディレクトリの表示」に属するため、
         // 差し替え前に引き継いでから、新しい Entries に存在しない名前を除去する。
         refreshed.Marked = current.Marked;
-        MarkHelper.ReconcileAfterReload(refreshed);
+        if (waitForLoad || !refreshed.IsLoading)
+        {
+            await CompleteColumnLoadAsync(refreshed);
+            MarkHelper.ReconcileAfterReload(refreshed);
+        }
+        else
+        {
+            refreshed.NeedsMarkReconcile = true;
+        }
 
+        current.ReadCts?.Cancel();
         pane.Columns[pane.ActiveColumn] = refreshed;
 
         await RebuildRightSideAsync(pane, pane.ActiveColumn);
         _redrawGate.Request();
     }
 
-    static async Task RecomputeMatchesAsync(Pane pane)
+    static void CancelSearch(SearchState search)
     {
-        // Cancel any in-progress scan
-        pane.Search.SearchCts?.Cancel();
-        pane.Search.SearchCts?.Dispose();
+        search.SearchCts?.Cancel();
+        search.SearchCts?.Dispose();
+        search.SearchCts = null;
+        search.Pending = null;
+    }
+
+    internal static void InvalidateSearch(SearchState search)
+    {
+        CancelSearch(search);
+        search.Matches.Clear();
+        search.MatchIndex = 0;
+        search.PatternTimedOut = false;
+        search.NeedsRecompute = search.Query.Length > 0;
+        search.SearchDone = !search.NeedsRecompute;
+    }
+
+    internal static void StartSearch(Pane pane)
+    {
+        SearchState search = pane.Search;
+        if (!search.NeedsRecompute) return;
+
+        Column column = pane.Columns[pane.ActiveColumn];
+        List<string> entries = column.Entries;
+        string query = search.Query;
+        bool regexMode = search.RegexMode;
+        MigemoProvider? migemo = _migemo;
         var cts = new CancellationTokenSource();
-        pane.Search.SearchCts = cts;
+        CancellationToken token = cts.Token;
+        search.SearchCts = cts;
+        search.NeedsRecompute = false;
+        search.Pending = new SearchScan(column, entries,
+            Task.Run(() => SearchHelper.Scan(entries, query, regexMode, migemo, token), token));
+    }
 
-        string query = pane.Search.Query;
-        bool regexMode = pane.Search.RegexMode;
-        int anchor = pane.Search.Anchor;
-        Column col = pane.Columns[pane.ActiveColumn];
+    internal static bool ApplyCompletedSearch(Pane pane)
+    {
+        SearchState search = pane.Search;
+        if (search.Pending is not { } pending || !pending.Completion.IsCompleted)
+            return false;
 
-        lock (_searchLock)
+        search.Pending = null;
+        search.SearchCts?.Dispose();
+        search.SearchCts = null;
+        Column column = pane.Columns[pane.ActiveColumn];
+        if (!ReferenceEquals(column, pending.Column) || !ReferenceEquals(column.Entries, pending.Entries))
         {
-            pane.Search.Matches.Clear();
-            pane.Search.SearchDone = false;
-            pane.Search.NeedsRecompute = false;
+            InvalidateSearch(search);
+            return false;
         }
 
-        await Task.Run(() =>
-        {
-            for (int i = 0; i < col.Entries.Count; i++)
-            {
-                if (cts.Token.IsCancellationRequested) return;
-                string name = col.Entries[i].TrimEnd('/');
-                if (SearchHelper.MatchesSearchQuery(name, query, regexMode, _migemo))
-                {
-                    lock (_searchLock) { pane.Search.Matches.Add(i); }
-                }
-            }
+        SearchScanResult result = pending.Completion.GetAwaiter().GetResult();
+        search.Matches = result.Matches;
+        search.MatchIndex = SearchHelper.FindNearestMatchIndex(search.Matches, search.Anchor);
+        search.PatternTimedOut = result.PatternTimedOut;
+        search.SearchDone = true;
+        _redrawGate.Request();
+        if (search.Matches.Count == 0)
+            return false;
 
-            if (cts.Token.IsCancellationRequested) return;
-
-            lock (_searchLock)
-            {
-                pane.Search.MatchIndex = SearchHelper.FindNearestMatchIndex(pane.Search.Matches, anchor);
-                if (pane.Search.Matches.Count > 0)
-                    col.Selected = pane.Search.Matches[pane.Search.MatchIndex];
-                pane.Search.SearchDone = true;
-            }
-        }, cts.Token);
+        int selected = search.Matches[search.MatchIndex];
+        bool moved = selected != column.Selected;
+        column.Selected = selected;
+        return moved;
     }
 
     static void EnterSearchMode(Pane pane)
@@ -4958,26 +4901,19 @@ static class Program
         pane.Search.Anchor = col.Selected;
         pane.Search.Query = "";
         pane.Search.RegexMode = false;
-        lock (_searchLock)
-        {
-            pane.Search.Matches.Clear();
-            pane.Search.SearchDone = true;
-            pane.Search.NeedsRecompute = false;
-        }
+        InvalidateSearch(pane.Search);
     }
 
     static async Task ExitSearchMode(Pane pane, bool restoreCursor)
     {
-        pane.Search.SearchCts?.Cancel();
-        pane.Search.SearchCts?.Dispose();
-        pane.Search.SearchCts = null;
-        pane.Search.Active = false;
+        SearchState search = pane.Search;
+        search.Active = false;
+        search.Query = "";
+        InvalidateSearch(search);
         if (restoreCursor)
-            pane.Columns[pane.ActiveColumn].Selected = pane.Search.Anchor;
-        lock (_searchLock)
         {
-            pane.Search.Matches.Clear();
-            pane.Search.SearchDone = true;
+            Column column = pane.Columns[pane.ActiveColumn];
+            column.Selected = Math.Clamp(search.Anchor, 0, Math.Max(0, column.Entries.Count - 1));
         }
         if (pane.NeedsRefresh)
         {
@@ -5174,7 +5110,7 @@ static class Program
     {
         if (pane.Leap.NoMatch || pane.Leap.VisibleIndices.Count != 1) return;
         Column ac = pane.Columns[pane.ActiveColumn];
-        if (ac.Entries.Count > 0 && ac.Selected < ac.Entries.Count
+        if (!ac.IsLoading && ac.Entries.Count > 0 && ac.Selected < ac.Entries.Count
             && ac.Entries[ac.Selected].EndsWith("/"))
             await EnterDirInLeapAsync(pane);
     }
@@ -5303,8 +5239,7 @@ static class Program
                 if (string.IsNullOrEmpty(pattern)) continue;
                 try
                 {
-                    var rx = new System.Text.RegularExpressions.Regex(
-                        pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    var rx = new Regex(pattern, RegexOptions.IgnoreCase, SearchHelper.RegexTimeout);
                     for (int i = 0; i < col.Entries.Count; i++)
                         if (!migemoMatches.Contains(i) && rx.IsMatch(col.Entries[i]))
                             migemoMatches.Add(i);
@@ -5764,7 +5699,7 @@ static class Program
         if (key.Key == ConsoleKey.R && (key.Modifiers & ConsoleModifiers.Control) != 0)
         {
             s.RegexMode = !s.RegexMode;
-            s.NeedsRecompute = true;
+            InvalidateSearch(s);
             s.LastInputTime = DateTime.UtcNow;
             return;
         }
@@ -5772,18 +5707,10 @@ static class Program
         if (key.Key == ConsoleKey.DownArrow ||
             (key.Key == ConsoleKey.N && (key.Modifiers & ConsoleModifiers.Control) != 0))
         {
-            bool moved = false;
-            lock (_searchLock)
+            if (s.Matches.Count > 0)
             {
-                if (s.Matches.Count > 0)
-                {
-                    s.MatchIndex = (s.MatchIndex + 1) % s.Matches.Count;
-                    col.Selected = s.Matches[s.MatchIndex];
-                    moved = true;
-                }
-            }
-            if (moved)
-            {
+                s.MatchIndex = (s.MatchIndex + 1) % s.Matches.Count;
+                col.Selected = s.Matches[s.MatchIndex];
                 UpdateHorizontalScroll(pane);
                 await RebuildRightSideAsync(pane, pane.ActiveColumn);
                 if (pane.Preview.IsVisible) StartPreviewLoad(pane);
@@ -5794,18 +5721,10 @@ static class Program
         if (key.Key == ConsoleKey.UpArrow ||
             (key.Key == ConsoleKey.P && (key.Modifiers & ConsoleModifiers.Control) != 0))
         {
-            bool moved = false;
-            lock (_searchLock)
+            if (s.Matches.Count > 0)
             {
-                if (s.Matches.Count > 0)
-                {
-                    s.MatchIndex = (s.MatchIndex - 1 + s.Matches.Count) % s.Matches.Count;
-                    col.Selected = s.Matches[s.MatchIndex];
-                    moved = true;
-                }
-            }
-            if (moved)
-            {
+                s.MatchIndex = (s.MatchIndex - 1 + s.Matches.Count) % s.Matches.Count;
+                col.Selected = s.Matches[s.MatchIndex];
                 UpdateHorizontalScroll(pane);
                 await RebuildRightSideAsync(pane, pane.ActiveColumn);
                 if (pane.Preview.IsVisible) StartPreviewLoad(pane);
@@ -5818,7 +5737,7 @@ static class Program
             if (s.Query.Length > 0)
             {
                 s.Query = s.Query[..^1];
-                s.NeedsRecompute = true;
+                InvalidateSearch(s);
                 s.LastInputTime = DateTime.UtcNow;
             }
             return;
@@ -5827,7 +5746,7 @@ static class Program
         if (!char.IsControl(key.KeyChar))
         {
             s.Query += key.KeyChar;
-            s.NeedsRecompute = true;
+            InvalidateSearch(s);
             s.LastInputTime = DateTime.UtcNow;
             return;
         }
@@ -6060,6 +5979,7 @@ static class Program
 
     static void CancelAllReadsInPane(Pane pane)
     {
+        CancelSearch(pane.Search);
         // 破棄される Pane 配下の全カラムで非同期読み込み中の ReadCts をキャンセルし、
         // 再訪時に同じカーソル位置へ復元できるよう SaveCursorMemory も呼ぶ。
         foreach (Column col in pane.Columns)
@@ -6110,7 +6030,7 @@ static class Program
 
         string rootMarker = GetRootPath();
         Column rootColumn = await CreateColumnAsync(rootMarker);
-        if (rootColumn.LoadingTask != null) await rootColumn.LoadingTask;
+        await CompleteColumnLoadAsync(rootColumn);
         ApplyColumnWidth(pane, rootColumn);
         pane.Columns.Add(rootColumn);
 
@@ -6143,7 +6063,7 @@ static class Program
         if (IsWindows())
         {
             Column driveColumn = await CreateColumnAsync(accumulatedPath);
-            if (driveColumn.LoadingTask != null) await driveColumn.LoadingTask;
+            await CompleteColumnLoadAsync(driveColumn);
             ApplyColumnWidth(pane, driveColumn);
             pane.Columns.Add(driveColumn);
             pane.ActiveColumn++;
@@ -6163,7 +6083,7 @@ static class Program
 
             accumulatedPath = Path.Combine(accumulatedPath, segment);
             Column next = await CreateColumnAsync(accumulatedPath);
-            if (next.LoadingTask != null) await next.LoadingTask;
+            await CompleteColumnLoadAsync(next);
 
             while (pane.Columns.Count > pane.ActiveColumn + 1)
                 pane.Columns.RemoveAt(pane.Columns.Count - 1);
@@ -6528,14 +6448,7 @@ static class Program
         }
         else if (pane.Search.Active)
         {
-            List<int> matchSnapshot;
-            bool done;
-            lock (_searchLock)
-            {
-                matchSnapshot = new List<int>(pane.Search.Matches);
-                done = pane.Search.SearchDone;
-            }
-            string searchBar = SearchHelper.BuildSearchStatusBar(pane.Search, matchSnapshot, done, width);
+            string searchBar = SearchHelper.BuildSearchStatusBar(pane.Search, pane.Search.Matches, pane.Search.SearchDone, width);
             frame[height - 1] = searchBar; // already padded to width
         }
         else if (_lastErrorMessage != null)
@@ -6759,16 +6672,10 @@ static class Program
         bool inSearch = active && pane.Search.Active;
         HashSet<int> matchSet = new HashSet<int>();
         int currentMatchEntry = -1;
-        if (inSearch)
+        if (inSearch && pane.Search.Matches.Count > 0)
         {
-            lock (_searchLock)
-            {
-                if (pane.Search.Matches.Count > 0)
-                {
-                    matchSet = new HashSet<int>(pane.Search.Matches);
-                    currentMatchEntry = pane.Search.Matches[pane.Search.MatchIndex];
-                }
-            }
+            matchSet = new HashSet<int>(pane.Search.Matches);
+            currentMatchEntry = pane.Search.Matches[pane.Search.MatchIndex];
         }
 
         if (inLeap && leapVisible != null)

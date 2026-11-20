@@ -17,10 +17,13 @@
     </AssemblyAttribute>
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
+    <PackageReference Include="SkiaSharp" Version="4.157.0" GeneratePathProperty="true" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.157.0" GeneratePathProperty="true" />
   </ItemGroup>
   <Target Name="CopyThirdPartyNotices" AfterTargets="Publish">
     <Copy SourceFiles="$(MSBuildProjectDirectory)\THIRD-PARTY-NOTICES.txt"
           DestinationFolder="$(PublishDir)" />
+    <Copy SourceFiles="$(PkgSkiaSharp)\LICENSE.txt;$(PkgSkiaSharp_NativeAssets_Linux_NoDependencies)\THIRD-PARTY-NOTICES.txt"
+          DestinationFiles="$(PublishDir)SkiaSharp-LICENSE.txt;$(PublishDir)SkiaSharp-THIRD-PARTY-NOTICES.txt" />
   </Target>
 </Project>

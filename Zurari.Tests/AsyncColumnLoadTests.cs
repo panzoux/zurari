@@ -19,8 +19,8 @@ public class AsyncColumnLoadTests
         try
         {
             Column col = await Program.CreateColumnAsync(dir);
-            Assert.NotNull(col.LoadingTask);
-            await col.LoadingTask!;
+            Assert.NotNull(col.Load);
+            await Program.CompleteColumnLoadAsync(col);
             Assert.False(col.IsLoading);
             Assert.Equal(2, col.Entries.Count);
         }
@@ -32,12 +32,35 @@ public class AsyncColumnLoadTests
     {
         string bogus = Path.Combine(Path.GetTempPath(), "zrr_missing_" + Guid.NewGuid().ToString("N"));
         Column col = await Program.CreateColumnAsync(bogus);
-        // Stat check now runs inside the loader; the caller gets a loading column immediately.
-        Assert.NotNull(col.LoadingTask);
-        await col.LoadingTask!;
+        // The caller gets a loading column before the worker enumerates the path.
+        Assert.NotNull(col.Load);
+        await Program.CompleteColumnLoadAsync(col);
         Assert.False(col.IsLoading);
         Assert.Single(col.Entries);
         Assert.Equal("<No file>", col.Entries[0]);
+    }
+
+    [Fact]
+    public async Task DirectoryLoad_PublishesSeparateSnapshots_AndLeavesColumnUpdatesToCaller()
+    {
+        string dir = MakeTempDir(Enumerable.Range(0, 200).Select(i => $"f{i:D3}.txt").ToArray());
+        try
+        {
+            var col = await Program.CreateColumnAsync(dir);
+            var load = Assert.IsType<DirectoryColumnLoad>(col.Load);
+            var completed = await load.Completion;
+            var initial = Assert.IsType<DirectoryColumnSnapshot>(load.Initial);
+
+            Assert.Empty(col.Entries);
+            Assert.True(col.IsLoading);
+            Assert.InRange(initial.Entries.Count, 1, completed.Entries.Count - 1);
+            Assert.Equal(initial.Entries, completed.Entries.Take(initial.Entries.Count));
+
+            Assert.True(Program.ApplyAvailableColumnLoad(col));
+            Assert.Same(completed.Entries, col.Entries);
+            Assert.False(col.IsLoading);
+        }
+        finally { Directory.Delete(dir, true); }
     }
 
     [Fact]
@@ -54,7 +77,7 @@ public class AsyncColumnLoadTests
         {
             Column col = await Program.CreateColumnAsync(dir);
             col.ReadCts!.Cancel();
-            await col.LoadingTask!;          // must complete (cancelled), not hang or throw
+            await Program.CompleteColumnLoadAsync(col);          // must complete (cancelled), not hang or throw
             Assert.False(col.IsLoading);
             Assert.True(col.Entries.Count < 2000,
                 $"expected cancelled read, but all {col.Entries.Count} entries were loaded");
@@ -66,7 +89,7 @@ public class AsyncColumnLoadTests
     {
         var pane = new Pane();
         Column col = await Program.CreateColumnAsync(rootDir);
-        await col.LoadingTask!;
+        await Program.CompleteColumnLoadAsync(col);
         pane.Columns.Add(col);
         return pane;
     }
@@ -92,7 +115,7 @@ public class AsyncColumnLoadTests
             Assert.Equal(2, pane.Columns.Count);
             Assert.True(pane.Columns[1].IsLoading, "RebuildRightSideAsync blocked on child LoadingTask");
 
-            await pane.Columns[1].LoadingTask!;
+            await Program.CompleteColumnLoadAsync(pane.Columns[1]);
             Assert.Equal(2000, pane.Columns[1].Entries.Count);
         }
         finally { Directory.Delete(root, true); }
@@ -111,7 +134,7 @@ public class AsyncColumnLoadTests
             Pane pane = await MakePaneAtAsync(root);
             pane.Columns[0].Selected = pane.Columns[0].Entries.IndexOf("sub/");
             await Program.RebuildRightSideAsync(pane, 0);
-            await pane.Columns[1].LoadingTask!;
+            await Program.CompleteColumnLoadAsync(pane.Columns[1]);
             pane.Columns[1].Selected = pane.Columns[1].Entries.IndexOf("grand/");
 
             await Program.ExtendRightSideIfReadyAsync(pane);
@@ -165,7 +188,7 @@ public class AsyncColumnLoadTests
             Pane pane = await MakePaneAtAsync(root);
             pane.Columns[0].Selected = 0;                        // "d1/"
             await Program.RebuildRightSideAsync(pane, 0);
-            await pane.Columns[1].LoadingTask!;
+            await Program.CompleteColumnLoadAsync(pane.Columns[1]);
             Assert.Equal(2, pane.Columns.Count);
 
             Program.MoveDown(pane);                              // onto "zzz.txt"
@@ -188,7 +211,7 @@ public class AsyncColumnLoadTests
             await Program.RefreshPaneNowAsync(pane);
 
             Column refreshed = pane.Columns[0];
-            if (refreshed.LoadingTask != null) await refreshed.LoadingTask;
+            await Program.CompleteColumnLoadAsync(refreshed);
             Program.ProcessPendingMarkReconciles(pane);
             Assert.Contains("a.txt", refreshed.Marked);
             Assert.DoesNotContain("ghost.txt", refreshed.Marked);
@@ -263,7 +286,7 @@ public class AsyncColumnLoadTests
             Assert.True(pane.Columns[0].Selected >= 0);
 
             await Program.RebuildRightSideAsync(pane, 0);
-            await pane.Columns[1].LoadingTask!;
+            await Program.CompleteColumnLoadAsync(pane.Columns[1]);
             Assert.Equal(2, pane.Columns.Count);
             Assert.Equal(loopDir, pane.Columns[1].Path);
 
@@ -330,12 +353,12 @@ public class AsyncColumnLoadTests
             Assert.True(pane.Columns[0].Selected >= 0);
 
             await Program.RebuildRightSideAsync(pane, 0);
-            await pane.Columns[1].LoadingTask!;         // pane.Columns[1] = b, only entry "c/"
+            await Program.CompleteColumnLoadAsync(pane.Columns[1]);         // pane.Columns[1] = b, only entry "c/"
             pane.Columns[1].Selected = pane.Columns[1].Entries.IndexOf("c/");
             Assert.True(pane.Columns[1].Selected >= 0);
 
             await Program.RebuildRightSideAsync(pane, 1);
-            await pane.Columns[2].LoadingTask!;         // pane.Columns[2] = c, entries "d/" and "link_a/"
+            await Program.CompleteColumnLoadAsync(pane.Columns[2]);         // pane.Columns[2] = c, entries "d/" and "link_a/"
             pane.Columns[2].Selected = pane.Columns[2].Entries.IndexOf("link_a/");
             Assert.True(pane.Columns[2].Selected >= 0);
 
